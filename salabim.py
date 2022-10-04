@@ -1,13 +1,13 @@
-#               _         _      _               ____   ____       ___      ____
-#   ___   __ _ | |  __ _ | |__  (_) _ __ ___    |___ \ |___ \     / _ \    |___ \
-#  / __| / _` || | / _` || '_ \ | || '_ ` _ \     __) |  __) |   | | | |     __) |
-#  \__ \| (_| || || (_| || |_) || || | | | | |   / __/  / __/  _ | |_| | _  / __/
-#  |___/ \__,_||_| \__,_||_.__/ |_||_| |_| |_|  |_____||_____|(_) \___/ (_)|_____|
+#               _         _      _               ____   ____       ___      _____
+#   ___   __ _ | |  __ _ | |__  (_) _ __ ___    |___ \ |___ \     / _ \    |___  |
+#  / __| / _` || | / _` || '_ \ | || '_ ` _ \     __) |  __) |   | | | |      / /
+#  \__ \| (_| || || (_| || |_) || || | | | | |   / __/  / __/  _ | |_| | _   / /
+#  |___/ \__,_||_| \__,_||_.__/ |_||_| |_| |_|  |_____||_____|(_) \___/ (_) /_/
 #  Discrete event simulation in Python
 #
 #  see www.salabim.org for more information, the documentation and license information
 
-__version__ = "22.0.3"
+__version__ = "22.0.7"
 import heapq
 import random
 import time
@@ -41,10 +41,6 @@ import datetime
 
 from pathlib import Path
 
-try:
-    from ycecream import yc
-except ImportError:
-    pass
 
 Pythonista = sys.platform == "ios"
 Windows = sys.platform.startswith("win")
@@ -76,7 +72,7 @@ class SimulationStopped(Exception):
     pass
 
 
-class ItemFile(object):
+class ItemFile:
     """
     define an item file to be used with read_item, read_item_int, read_item_float and read_item_bool
 
@@ -230,7 +226,7 @@ class ItemFile(object):
                 yield result
 
 
-class Monitor(object):
+class Monitor:
     """
     Monitor object
 
@@ -633,7 +629,7 @@ class Monitor(object):
         m._name = self.name() + ".frozen" if name is None else name
         m.env._now = self.env._now
         m.env._offset = self.env._offset
-        m.env.t = self.env.t
+        m.env._t = self.env._t
         return m
 
     def slice(self, start=None, stop=None, modulo=None, name=None):
@@ -970,7 +966,7 @@ class Monitor(object):
             self._monitor = monitor
         if stats_only is not None:
             self._stats_only = stats_only
-
+        self.start = self.env._now
         if self._stats_only:  # all values for ex0=False and ex0=True
             self.mun = [0] * 2
             self.n = [0] * 2
@@ -998,7 +994,6 @@ class Monitor(object):
                 self._t.append(self.env._now)
             else:
                 self._weight = False  # weights are only stored if there is a non 1 weight
-            self.start = self.env._now - self.env._offset  # not self.env.now() to support frozen monitors
             Monitor.cached_xweight = {(ex0, force_numeric): (0, 0) for ex0 in (False, True) for force_numeric in (False, True)}  # invalidate the cache
 
         self.monitor(monitor)
@@ -1039,6 +1034,15 @@ class Monitor(object):
                     else:
                         self._tally_off()  # can't use tally() here because self._tally should be untouched
         return self.monitor
+
+    def start_time(self):
+        """
+        Returns
+        -------
+        Start time of the monitor : float
+             either the time of creation or latest reset
+        """
+        return self.start - self.env._offset
 
     def tally(self, value, weight=1):
         """
@@ -2560,6 +2564,10 @@ class Monitor(object):
         layer : int
             layer (default 0)
 
+        as_points : bool
+            allows to override the as_points setting of tallies, which is
+            by default False for level monitors and True for non level monitors
+
         parent : Component
             component where this animation object belongs to (default None) |n|
             if given, the animation object will be removed
@@ -2726,7 +2734,7 @@ class Monitor(object):
         t = array.array("d")
         if add_now:
             addx = [x[-1]]
-            addt = [self.env._now]
+            addt = [self.env._t]
         else:
             addx = []
             addt = []
@@ -2776,7 +2784,8 @@ class Monitor(object):
 
     def _xweight(self, ex0=False, force_numeric=True):
         if self._level:
-            thishash = hash((self, len(self._x), max(self.env.t, self.env._now)))
+            t_extra = self.env._t if self.env._animate else self.env._now
+            thishash = hash((self, len(self._x), t_extra))
         else:
             thishash = hash((self, len(self._x)))
         if Monitor.cached_xweight[(ex0, force_numeric)][0] == thishash:
@@ -2797,7 +2806,7 @@ class Monitor(object):
                     weightall.append(t - lastt)
                 lastt = t
 
-            weightall.append(self.env._now - lastt)
+            weightall.append(t_extra - lastt)
 
             weight = array.array("d")
             if typecode:
@@ -2873,7 +2882,107 @@ class _SystemMonitor(Monitor):
         return self._tally
 
 
-class AnimateMonitor(object):
+class DynamicClass:
+    def __init__(self):
+        self._dynamics = set()
+
+    def register_dynamic_attributes(self, attributes):
+        """
+        Registers one or more attributes as being dynamic
+
+        Parameters
+        ----------
+        attributes : str
+            a specification of attributes to be registered as dynamic |n|
+            e.g. "x y"
+        """
+        if isinstance(attributes, str):
+            attributes = attributes.split()
+        for attribute in attributes:
+            if hasattr(self, attribute):
+                self._dynamics.add((attribute))
+            else:
+                raise ValueError(f"attribute {attribute} does not exist")
+
+    def deregister_dynamic_attributes(self, attributes):
+        """
+        Deregisters one or more attributes as being dynamic
+
+        Parameters
+        ----------
+        attributes : str
+            a specification of attributes to be registered as dynamic |n|
+            e.g. "x y"
+        """
+
+        if isinstance(attributes, str):
+            attributes = attributes.split()
+        for attribute in attributes:
+            if hasattr(self, attribute):
+                self._dynamics.remove((attribute))
+            else:
+                raise ValueError(f"attribute {attribute} does not exist")
+
+    def __getattribute__(self, attr):
+        if attr == "_dynamics":
+            return super().__getattribute__(attr)
+
+        c = super().__getattribute__(attr)
+        if attr not in self._dynamics:
+            return c
+        if callable(c):
+            if inspect.isfunction(c):
+                nargs = c.__code__.co_argcount
+                if nargs == 0:
+                    return lambda t: c()
+                if nargs == 1:
+                    return c
+                return functools.partial(c, self.arg)
+            if inspect.ismethod(c):
+                return c
+        return lambda t: c
+
+    def getattribute_spec(self, attr):
+        """
+        special version of getattribute.
+        When it's dynamic it will return the value in case of a constan or a parameterless function
+        Used only in AnimateCombined
+        """
+
+        if attr == "_dynamics":
+            return super().__getattribute__(attr)
+
+        c = super().__getattribute__(attr)
+        if attr not in self._dynamics:
+            return c
+        if callable(c):
+            if inspect.isfunction(c):
+                nargs = c.__code__.co_argcount
+                if nargs == 0:
+                    return c()
+                if nargs == 1:
+                    return c
+                return functools.partial(c, self.arg)
+            if inspect.ismethod(c):
+                return c
+        return c
+
+    def __call__(self, **kwargs):
+        for k, v in kwargs.items():
+            if hasattr(self, k):
+                setattr(self, k, v)
+            else:
+                raise AttributeError(f"attribute {k} does not exist")
+
+    def add_attr(self, **kwargs):
+        for k, v in kwargs.items():
+            if hasattr(self, k):
+                raise AttributeError("attribute " + k + " already set")
+            setattr(self, k, v)
+        return self
+
+
+class AnimateMonitor(DynamicClass):
     """
     animates a monitor in a panel
 
@@ -2995,6 +3104,10 @@ class AnimateMonitor(object):
     layer : int
         layer (default 0)
 
+    as_points : bool
+        allows to override the line/point setting, which is by default False for level
+        monitors and True for non level monitors
+
     parent : Component
         component where this animation object belongs to (default None) |n|
         if given, the animation object will be removed
@@ -3003,6 +3116,17 @@ class AnimateMonitor(object):
     over3d : bool  
         if True, this object will be rendered to the OpenGL window |n|
         if False (default), the normal 2D plane will be used.
+
+    visible : bool
+        visible |n|
+        if False, animation monitor is not shown, shown otherwise
+        (default True)
+
+    screen_coordinates : bool
+        use screen_coordinates |n|
+        if False,  the scale parameters are use for positioning and scaling
+        objects. |n|
+        if True (default), screen_coordinates will be used.
 
     Note
     ----
@@ -3027,10 +3151,10 @@ class AnimateMonitor(object):
         offsetx=0,
         offsety=0,
         angle=0,
-        vertical_offset=2,
+        vertical_offset=0,
         parent=None,
         vertical_scale=5,
-        horizontal_scale=None,
+        horizontal_scale=1,
         width=200,
         height=75,
         xy_anchor="sw",
@@ -3044,10 +3168,15 @@ class AnimateMonitor(object):
         label_offsety=0,
         label_linewidth=1,
         label_linecolor="fg",
+        as_points=None,
         over3d=None,
         layer=0,
+        visible=True,
+        keep=True,
+        screen_coordinates=True,
+        arg=None,
     ):
-
+        super().__init__()
         _checkismonitor(monitor)
         monitor._block_stats_only()
 
@@ -3057,148 +3186,296 @@ class AnimateMonitor(object):
         if linewidth is None:
             linewidth = 1 if monitor._level else 3
 
-        if horizontal_scale is None:
-            horizontal_scale = 1
-
         if over3d is None:
             over3d = default_over3d()
 
         offsetx += monitor.env.xy_anchor_to_x(xy_anchor, screen_coordinates=True, over3d=over3d)
         offsety += monitor.env.xy_anchor_to_y(xy_anchor, screen_coordinates=True, over3d=over3d)
 
-        self.aos = []
+        self.linecolor = linecolor
+        self.linewidth = linewidth
+        self.fillcolor = fillcolor
+        self.bordercolor = bordercolor
+        self.borderlinewidth = borderlinewidth
+        self.titlecolor = titlecolor
+        self.nowcolor = nowcolor
+        self.titlefont = titlefont
+        self.titlefontsize = titlefontsize
+        self.title = title
+        self.x = x
+        self.y = y
+        self.offsetx = offsetx
+        self.offsety = offsety
+        self.angle = angle
+        self.vertical_offset = vertical_offset
+        self.parent = parent
+        self.vertical_scale = vertical_scale
+        self.horizontal_scale = horizontal_scale
+        self.width = width
+        self.height = height
+        self.xy_anchor = xy_anchor
+        self.vertical_map = vertical_map
+        self.labels = labels
+        self.label_color = label_color
+        self.label_font = label_font
+        self.label_fontsize = label_fontsize
+        self.label_anchor = label_anchor
+        self.label_offsetx = label_offsetx
+        self.label_offsety = label_offsety
+        self.label_linewidth = label_linewidth
+        self.label_linecolor = label_linecolor
+        self.layer = layer
+        self.visible = visible
+        self.keep = keep
+        self.arg = self if arg is None else arg
+        self.as_points = not monitor._level if as_points is None else as_points
+        self._monitor = monitor
+        self.as_level = monitor._level
+        self.over3d = over3d
+        self.screen_coordinates = screen_coordinates
+        self.register_dynamic_attributes(
+            "linecolor linewidth fillcolor bordercolor borderlinewidth titlecolor nowcolor titlefont titlefontsize title "
+            "x y offsetx offsety angle vertical_offset parent vertical_scale horizontal_scale width height "
+            "xy_anchor labels label_color label_font label_fontsize label_anchor label_offsetx label_offsety "
+            "label_linewidth label_linecolor layer visible keep"
+        )
+
         if parent is not None:
             if not isinstance(parent, Component):
                 raise ValueError(repr(parent) + " is not a component")
             parent._animation_children.add(self)
         self.env = monitor.env
-        self.aos.append(
-            AnimateRectangle(
-                spec=(0, 0, width, height),
-                x=x,
-                y=y,
-                offsetx=offsetx,
-                offsety=offsety,
-                angle=angle,
-                fillcolor=fillcolor,
-                linewidth=borderlinewidth,
-                linecolor=bordercolor,
-                screen_coordinates=True,
-                layer=layer,
-                over3d=over3d,
-            )
-        )
-        self.aos.append(
-            AnimateText(
-                text=title,
-                textcolor=titlecolor,
-                x=x,
-                y=y,
-                offsetx=offsetx,
-                offsety=offsety + height + titlefontsize * 0.15,
-                angle=angle,
-                text_anchor="sw",
-                screen_coordinates=True,
-                fontsize=titlefontsize,
-                font=titlefont,
-                layer=layer,
-                over3d=over3d,
-            )
+        self.ao_frame = AnimateRectangle(
+            spec=lambda: (0, 0, self.width_t, self.height_t),
+            x=lambda: self.x_t,
+            y=lambda: self.y_t,
+            offsetx=lambda: self.offsetx_t,
+            offsety=lambda: self.offsety_t,
+            angle=lambda: self.angle_t,
+            fillcolor=lambda t: self.fillcolor(t),
+            linewidth=lambda t: self.borderlinewidth(t),
+            linecolor=lambda t: self.bordercolor(t),
+            screen_coordinates=self.screen_coordinates,
+            layer=lambda: self.layer_t + 0.2,  # to make it appear vehind label lines and plot line/points
+            over3d=self.over3d,
+            visible=lambda: self.visible_t,
         )
 
-        self.aos.append(
-            _Animate_t_Line(
-                line0=(),
-                linecolor0=nowcolor,
-                monitor=monitor,
-                width=width,
-                height=height,
-                t_scale=horizontal_scale,
-                layer=layer,
-                x0=x,
-                y0=y,
-                offsetx0=offsetx,
-                offsety0=offsety,
-                angle0=angle,
-                screen_coordinates=True,
-                over3d=over3d,
-            )
+        self.ao_text = AnimateText(
+            text=lambda t: self.title(t),
+            textcolor=lambda t: self.titlecolor(t),
+            x=lambda: self.x_t,
+            y=lambda: self.y_t,
+            offsetx=lambda: self.offsetx_t,
+            offsety=lambda t: self.offsety_t + self.height_t + self.titlefontsize(t) * 0.15,
+            angle=lambda: self.angle_t,
+            text_anchor="sw",
+            fontsize=lambda t: self.titlefontsize(t),
+            font=lambda t: self.titlefont(t),
+            layer=lambda t: self.layer_t,
+            over3d=self.over3d,
+            visible=lambda: self.visible_t,
+            screen_coordinates=self.screen_coordinates,
         )
-        self.aos.append(
-            _Animate_t_x_Line(
-                monitor=monitor,
-                linecolor0=linecolor,
-                line0=(),
-                linewidth0=linewidth,
-                as_points=not monitor._level,
-                screen_coordinates=True,
-                x0=x,
-                y0=y,
-                offsetx0=offsetx,
-                offsety0=offsety,
-                angle0=angle,
-                width=width,
-                height=height,
-                value_offsety=vertical_offset,
-                value_scale=vertical_scale,
-                value_map=vertical_map,
-                linewidth=linewidth,
-                t_scale=horizontal_scale,
-                layer=layer,
-                over3d=over3d,
-            )
+
+        self.ao_line = AnimateLine(
+            spec=lambda t: self.line(t),
+            x=lambda: self.x_t,
+            y=lambda: self.y_t,
+            offsetx=lambda: self.offsetx_t,
+            offsety=lambda: self.offsety_t,
+            angle=lambda: self.angle_t,
+            linewidth=lambda t: self.linewidth(t),
+            linecolor=lambda t: self.linecolor(t),
+            as_points=self.as_points,
+            layer=lambda: self.layer_t,
+            over3d=self.over3d,
+            visible=lambda: self.visible_t,
+            screen_coordinates=self.screen_coordinates,
         )
-        for label in labels:
+
+        self.ao_now_line = AnimateLine(
+            spec=lambda t: self.now_line(t),
+            x=lambda: self.x_t,
+            y=lambda: self.y_t,
+            offsetx=lambda: self.offsetx_t,
+            offsety=lambda: self.offsety_t,
+            angle=lambda: self.angle_t,
+            linecolor=lambda t: self.nowcolor(t),
+            layer=lambda: self.layer_t,
+            over3d=self.over3d,
+            visible=lambda: self.visible_t,
+            screen_coordinates=self.screen_coordinates,
+        )
+
+        self.ao_label_texts = []
+        self.ao_label_lines = []
+
+        self.show()
+
+    def t_to_x(self, t):
+        t -= self.t_start
+        if self.displacement_t < 0:
+            t += self.displacement_t
+            if t < 0:
+                t = 0
+                self.done = True
+        x = t * self.horizontal_scale_t
+        return max(0, min(self.width_t, x))
+
+    def value_to_y(self, value):
+        if value == self._monitor.off:
+            value = 0
+        else:
             try:
-                label_y = vertical_map(label) * vertical_scale + vertical_offset
-                if 0 <= label_y <= height:
-                    self.aos.append(
-                        AnimateText(
-                            text=str(label),
-                            textcolor=label_color,
-                            x=x,
-                            y=y,
-                            offsetx=offsetx + label_offsetx,
-                            offsety=offsety + label_offsety + label_y,
-                            angle=angle,
-                            text_anchor=label_anchor,
-                            screen_coordinates=True,
-                            fontsize=label_fontsize,
-                            font=label_font,
-                            layer=layer,
-                            over3d=over3d,
-                        )
-                    )
-                    self.aos.append(
-                        AnimateLine(
-                            spec=(0, 0, width, 0),
-                            x=x,
-                            y=y,
-                            offsetx=offsetx,
-                            offsety=label_y,
-                            angle=angle,
-                            linewidth=label_linewidth,
-                            linecolor=label_linecolor,
-                            screen_coordinates=True,
-                            over3d=over3d,
-                        )
-                    )
+                value = self.vertical_map(value)
+
+            except (ValueError, TypeError):
+                value = 0
+        return max(0, min(self.height_t, value * self.vertical_scale_t + self.vertical_offset_t))
+
+    def line(self, t):
+
+        result = []
+        if len(self._monitor._x) != 0:
+            value = self._monitor._x[-1]
+        else:
+            value = 0
+        lastt = t + self._monitor.env._offset
+        if self.as_level:
+            result.append(self.t_to_x(lastt))
+            result.append(self.value_to_y(value))
+        self.done = False
+        for value, t in zip(reversed(self._monitor._x), reversed(self._monitor._t)):
+            if self.as_level:
+                result.append(self.t_to_x(lastt))
+                result.append(self.value_to_y(value))
+            result.append(self.t_to_x(t))
+            result.append(self.value_to_y(value))
+            if self.done:
+                if not self.as_level:
+                    result.pop()  # remove the last outlier x
+                    result.pop()  # remove the last outlier y
+                break
+            lastt = t
+        return result
+
+    def now_line(self, t):
+        t -= self._monitor.start - self._monitor.env._offset
+        t = min(t, self.width_div_horizontal_scale_t)
+        x = t * self.horizontal_scale_t
+        return x, 0, x, self.height_t
+
+    def update(self, t):
+        if not self.keep(t):
+            self.remove()
+            return
+
+        self.width_t = self.width(t)
+        self.height_t = self.height(t)
+        self.x_t = self.x(t)
+        self.y_t = self.y(t)
+        self.offsetx_t = self.offsetx(t)
+        self.offsety_t = self.offsety(t)
+        self.angle_t = self.angle(t)
+        self.layer_t = self.layer(t)
+        self.visible_t = self.visible(t)
+        self.vertical_scale_t = self.vertical_scale(t)
+        self.vertical_offset_t = self.vertical_offset(t)
+        self.horizontal_scale_t = self.horizontal_scale(t)
+        self.linewidth_t = self.linewidth(t)
+        self.t_start = self._monitor.start
+        self.width_div_horizontal_scale_t = self.width_t / self.horizontal_scale_t
+        self.displacement_t = self.width_div_horizontal_scale_t - (t - self.t_start)
+
+        labels = []
+        label_ys = []
+
+        for label in self.labels(t):
+            try:
+                label_y = self.vertical_map(label) * self.vertical_scale_t + self.vertical_offset_t
+                if 0 <= label_y <= self.height_t:
+                    labels.append(label)
+                    label_ys.append(label_y)
             except (ValueError, TypeError):
                 pass
 
-        self.env.sys_objects.append(self)
+        for (label, label_y, ao_label_text, ao_label_line) in itertools.zip_longest(labels, label_ys, self.ao_label_texts[:], self.ao_label_lines[:]):
+            if label is None:
+                ao_label_text = self.ao_label_texts.pop()
+                ao_label_line = self.ao_label_lines.pop()
+                ao_label_text.remove()
+                ao_label_line.remove()
+            else:
+                if ao_label_text is None:
+                    ao_label_text = AnimateText(screen_coordinates=self.screen_coordinates)
+                    ao_label_line = AnimateLine(screen_coordinates=self.screen_coordinates)
+                    self.ao_label_texts.append(ao_label_text)
+                    self.ao_label_lines.append(ao_label_line)
 
-    def update(self, t):
-        pass
+                ao_label_text.text = str(label)
+                ao_label_text.textcolor = self.label_color(t)
+                ao_label_text.x = self.x_t
+                ao_label_text.y = self.y_t
+                ao_label_text.offsetx = self.offsetx_t + self.label_offsetx(t)
+                ao_label_text.offsety = self.offsety_t + self.label_offsety(t) + label_y
+                ao_label_text.angle = self.angle_t
+                ao_label_text.text_anchor = self.label_anchor(t)
+                ao_label_text.fontsize = self.label_fontsize(t)
+                ao_label_text.font = self.label_font(t)
+                ao_label_text.layer = self.layer_t
+                ao_label_text.over3d = self.over3d
+                ao_label_text.visible = self.visible_t
+
+                ao_label_line.spec = (0, 0, self.width_t, 0)
+                ao_label_line.x = self.x_t
+                ao_label_line.y = self.y_t
+                ao_label_line.offsetx = self.offsetx_t
+                ao_label_line.offsety = label_y
+                ao_label_line.angle = self.angle_t
+                ao_label_line.linewidth = self.label_linewidth(t)
+                ao_label_line.linecolor = self.label_linecolor(t)
+                ao_label_line.layer = self.layer_t + 0.1  # to make it appear behind the plot line/points
+                ao_label_line.over3d = self.over3d
+                ao_label_line.visible = self.visible_t
+
+    def monitor(self):
+        """
+        Returns
+        -------
+        monitor this animation object refers : Monitor
+        """
+        return self._monitor
+
+    def show(self):
+        """
+        show (unremove)
+
+        It is possible to use this method if already shown
+        """
+        self.ao_frame.show()
+        self.ao_text.show()
+        self.ao_line.show()
+        self.ao_now_line.show()
+        self.env.sys_objects.add(self)
 
     def remove(self):
         """
         removes the animate object and thus closes this animation
         """
-        for ao in self.aos:
+        self.ao_frame.remove()
+        self.ao_text.remove()
+        self.ao_line.remove()
+        self.ao_now_line.remove()
+        for ao in self.ao_label_texts:
+            ao.remove()
+        for ao in self.ao_label_lines:
             ao.remove()
 
-        self.env.sys_objects.remove(self)
+        self.env.sys_objects.discard(self)
+
+    def is_removed(self):
+        return self in self.env.sys_objects
 
 
 if Pythonista:
@@ -3238,16 +3515,16 @@ if Pythonista:
 
                 if env._synced or env._video:  # video forces synced
                     if env._video:
-                        env.t = env.video_t
+                        env._t = env.video_t
                     else:
                         if env.paused:
-                            env.t = env.start_animation_time
+                            env._t = env.start_animation_time
                         else:
-                            env.t = env.start_animation_time + ((time.time() - env.start_animation_clocktime) * env._speed)
-                    while (env.peek() < env.t) and env.running and env._animate:
+                            env._t = env.start_animation_time + ((time.time() - env.start_animation_clocktime) * env._speed)
+                    while (env.peek() < env._t) and env.running and env._animate:
                         env.step()
                         if env.paused:
-                            env.t = env.start_animation_time = env._now
+                            env._t = env.start_animation_time = env._now
                             break
 
                 else:
@@ -3255,13 +3532,12 @@ if Pythonista:
                         env.step()
                         if not env._current_component._suppress_pause_at_step:
                             env._step_pressed = False
-                        env.t = env._now
                 if not env.paused:
                     env.frametimes.append(time.time())
                 touchvalues = self.touches.values()
                 if env.retina > 1:
                     with io.BytesIO() as fp:
-                        env._capture_image("RGB").save(fp, "BMP")
+                        env._capture_image("RGB", include_topleft=True).save(fp, "BMP")
                         img = ui.Image.from_data(fp.getvalue(), env.retina)
                     if self.bg is None:
                         self.bg = scene.SpriteNode(scene.Texture(img))
@@ -3271,9 +3547,9 @@ if Pythonista:
                     else:
                         self.bg.texture = scene.Texture(img)
                 else:
-                    env.animation_pre_tick(env.t)
-                    env.animation_pre_tick_sys(env.t)
-                    capture_image = env._capture_image("RGB")
+                    env.animation_pre_tick(env.t())
+                    env.animation_pre_tick_sys(env.t())
+                    capture_image = env._capture_image("RGB", include_topleft=True)
                     env.animation_post_tick(env.t)
                     ims = scene.load_pil_image(capture_image)
                     scene.image(ims, 0, 0, *capture_image.size)
@@ -3384,7 +3660,7 @@ class Qmember:
         q.number_of_arrivals += 1
 
 
-class Queue(object):
+class Queue:
     """
     Queue object
 
@@ -3404,7 +3680,7 @@ class Queue(object):
         it is defined in (lowercased)
 
     capacity : float
-        mximum number of components the queueu can contain. |n|
+        mximum number of components the queue can contain. |n|
         if exceeded, a QueueFullError will be raised |n|
         default: inf
 
@@ -3481,6 +3757,10 @@ class Queue(object):
             if "n", waiting line runs northeards (i.e. from bottom to top) |n|
             if "e", waiting line runs eastwards (i.e. from left to right) (default) |n|
             if "s", waiting line runs southwards (i.e. from top to bottom)
+            if "t", waiting line runs follows given trajectory
+
+        trajectory : Trajectory
+            trajectory to be followed if direction == "t"
 
         reverse : bool
             if False (default), display in normal order. If True, reversed.
@@ -4713,20 +4993,7 @@ class Queue(object):
             self.env.print_trace("", "", self.name() + " clear")
 
 
-class _AddAttr:
-    """
-    Internal class used by Animatexxx classes, to add an add_attr method.
-    """
-
-    def add_attr(self, **kwargs):
-        for k, v in kwargs.items():
-            if hasattr(self, k):
-                raise AttributeError("attribute " + k + " already set")
-            setattr(self, k, v)
-        return self
-
-
-class Animate3dBase(_AddAttr):
+class Animate3dBase(DynamicClass):
     """
     Base class for a 3D animation object |n|
     When a class inherits from this base class, it will be added to the animation objects list to be shown
@@ -4757,19 +5024,21 @@ class Animate3dBase(_AddAttr):
         if omitted, default_env will be used
     """
 
-    def __init__(self, visible=True, arg=None, layer=0, parent=None, env=None, **kwargs):
-
-        self._dynamics = set()
+    def __init__(self, visible=True, keep=True, arg=None, layer=0, parent=None, env=None, **kwargs):
+        super().__init__()
         self.env = g.default_env if env is None else env
         self.visible = visible
+        self.keep = keep
         self.arg = self if arg is None else arg
         self.layer = layer
         if parent is not None:
             if not isinstance(parent, Component):
                 raise ValueError(repr(parent) + " is not a component")
+            parent._animation_children.add(self)
+
         self.sequence = self.env.serialize()
-        self.env.an_objects3d.append(self)
-        self.register_dynamic_attributes("visible layer")
+        self.env.an_objects3d.add(self)
+        self.register_dynamic_attributes("visible keep layer")
         self.setup(**kwargs)
 
     def setup(self):
@@ -4791,77 +5060,25 @@ class Animate3dBase(_AddAttr):
         """
         pass
 
+    def show(self):
+        """
+        show (unremove)
+
+        It is possible to use this method if already shown
+        """
+        self.env.an_objects3d.add(self)
+
     def remove(self):
         """
         removes the 3d animation oject
         """
-        if self in self.env.an_objects3d:
-            self.env.an_objects3d.remove(self)
+        self.env.an_objects3d.discard(self)
 
-    def register_dynamic_attributes(self, attributes):
-        """
-        Registers one or more attributes as being dynamic
-
-        Parameters
-        ----------
-        attributes : str
-            a specification of attributes to be registered as dynamic |n|
-            e.g. "x y"
-        """
-        if isinstance(attributes, str):
-            attributes = attributes.split()
-        for attribute in attributes:
-            if hasattr(self, attribute):
-                self._dynamics.add((attribute))
-            else:
-                raise ValueError(f"attribute {attribute} does not exist")
-
-    def deregister_dynamic_attributes(self, attributes):
-        """
-        Deregisters one or more attributes as being dynamic
-
-        Parameters
-        ----------
-        attributes : str
-            a specification of attributes to be registered as dynamic |n|
-            e.g. "x y"
-        """
-
-        if isinstance(attributes, str):
-            attributes = attributes.split()
-        for attribute in attributes:
-            if hasattr(self, attribute):
-                self._dynamics.remove((attribute))
-            else:
-                raise ValueError(f"attribute {attribute} does not exist")
-
-    def __getattribute__(self, attr):
-        if attr == "_dynamics":
-            return super().__getattribute__(attr)
-        c = super().__getattribute__(attr)
-        if attr not in self._dynamics:
-            return c
-        if callable(c):
-            if inspect.isfunction(c):
-                nargs = c.__code__.co_argcount
-                if nargs == 0:
-                    return lambda t: c()
-                if nargs == 1:
-                    return c
-                return functools.partial(c, self.arg)
-            if inspect.ismethod(c):
-                return c
-        return lambda t: c
-
-    def __call__(self, **kwargs):
-        for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
-            else:
-                raise AttributeError(f"attribute {k} does not exist")
+    def is_removed(self):
+        return self in self.env.an_objects3d
 
 
-class Environment(object):
+class Environment:
     """
     environment object
 
@@ -4986,6 +5203,7 @@ class Environment(object):
         # just to allow main to be created; will be reset later
         self._nameserializeComponent = {}
         self._now = 0
+        self._t = 0
         self._offset = 0
         self._main = Component(name="main", env=self, process=None)
         self._main.status._value = current
@@ -5002,24 +5220,24 @@ class Environment(object):
         self._standbylist = []
         self._pendingstandbylist = []
 
-        self.an_objects = []
-        self.an_objects_over3d = []
+        self.an_objects = set()
+        self.an_objects_over3d = set()
 
-        self.an_objects3d = []
+        self.an_objects3d = set()
         self.ui_objects = []
-        self.sys_objects = []
+        self.sys_objects = set()
         self.serial = 0
         self._speed = 1
         self._animate = False
         self._animate3d = False
-        self.view = _AnimateIntro()
-        _AnimateExtro()
+        self.view = _AnimateIntro(env=self)
+        _AnimateExtro(env=self)
         self._gl_initialized = False
         self._camera_auto_print = False
         self.obj_filenames = {}
         self.running = False
         self._maximum_number_of_bitmaps = 4000
-        self.t = 0
+        self._t = 0
         self.video_t = 0
         self.frame_number = 0
         self._exclude_from_animation = "only in video"
@@ -5061,6 +5279,7 @@ class Environment(object):
         self._video_width = "auto"
         self._video_height = "auto"
         self._video_mode = "2d"
+        self._background3d_color = "black"
         self._title = "salabim"
         self._show_menu_buttons = True
         self._x0 = 0
@@ -5129,7 +5348,7 @@ class Environment(object):
         return
 
     def animation_pre_tick_sys(self, t):
-        for ao in self.sys_objects:
+        for ao in self.sys_objects.copy():  # copy required as ao's may be removed due to keep
             ao.update(t)
 
     def animation3d_init(self):
@@ -5141,7 +5360,6 @@ class Environment(object):
 
         self.window3d = glut.glutCreateWindow("salabim3d")
 
-        gl.glClearColor(0.0, 0.0, 0.0, 0.0)
         gl.glClearDepth(1.0)
         gl.glDepthFunc(gl.GL_LESS)
         gl.glEnable(gl.GL_DEPTH_TEST)
@@ -5217,7 +5435,7 @@ class Environment(object):
                 build_times[prop].append(offset)
 
             for prop in props:
-                setattr(self.view, prop, lambda arg, t, prop=prop: numpy.interp(t, times[prop], values[prop]))  # default argument prop is evaluated at start!
+                setattr(self.view, prop, lambda arg, t, prop=prop: interp(t, times[prop], values[prop]))  # default argument prop is evaluated at start!
 
             for line in spec.split("\n"):
                 line = line.strip()
@@ -5254,50 +5472,56 @@ class Environment(object):
 
         else:
             for prop in props:
-                setattr(self.view, prop, getattr(self.view, prop)(self.t))
+                setattr(self.view, prop, getattr(self.view, prop)(self.t()))
 
     def camera_rotate(self, event=None, delta_angle=None):
-        adjusted_x = self.view.x_eye(self.t) - self.view.x_center(self.t)
-        adjusted_y = self.view.y_eye(self.t) - self.view.y_center(self.t)
+        t = self.t()
+        adjusted_x = self.view.x_eye(t) - self.view.x_center(t)
+        adjusted_y = self.view.y_eye(t) - self.view.y_center(t)
         cos_rad = math.cos(math.radians(delta_angle))
         sin_rad = math.sin(math.radians(delta_angle))
-        self.view.x_eye = self.view.x_center(self.t) + cos_rad * adjusted_x + sin_rad * adjusted_y
-        self.view.y_eye = self.view.y_center(self.t) - sin_rad * adjusted_x + cos_rad * adjusted_y
+        self.view.x_eye = self.view.x_center(t) + cos_rad * adjusted_x + sin_rad * adjusted_y
+        self.view.y_eye = self.view.y_center(t) - sin_rad * adjusted_x + cos_rad * adjusted_y
 
         if self._camera_auto_print:
             self.camera_print(props="x_eye y_eye")
 
     def camera_zoom(self, event=None, factor_xy=None, factor_z=None):
-        self.view.x_eye = self.view.x_center(self.t) - (self.view.x_center(self.t) - self.view.x_eye(self.t)) * factor_xy
-        self.view.y_eye = self.view.y_center(self.t) - (self.view.y_center(self.t) - self.view.y_eye(self.t)) * factor_xy
-        self.view.z_eye = self.view.z_center(self.t) - (self.view.z_center(self.t) - self.view.z_eye(self.t)) * factor_z
+        t = self.t()
+        self.view.x_eye = self.view.x_center(t) - (self.view.x_center(t) - self.view.x_eye(t)) * factor_xy
+        self.view.y_eye = self.view.y_center(t) - (self.view.y_center(t) - self.view.y_eye(t)) * factor_xy
+        self.view.z_eye = self.view.z_center(t) - (self.view.z_center(t) - self.view.z_eye(t)) * factor_z
         if self._camera_auto_print:
             self.camera_print(props="x_eye y_eye z_eye")
 
     def camera_xy_center(self, event=None, x_dis=None, y_dis=None):
-        self.view.x_center = self.view.x_center(self.t) + x_dis
-        self.view.y_center = self.view.y_center(self.t) + y_dis
+        t = self.t()
+        self.view.x_center = self.view.x_center(t) + x_dis
+        self.view.y_center = self.view.y_center(t) + y_dis
         if self._camera_auto_print:
             self.camera_print(props="x_center y_center")
 
     def camera_xy_eye(self, event=None, x_dis=None, y_dis=None):
-        self.view.x_eye = self.view.x_eye(self.t) + x_dis
-        self.view.y_eye = self.view.y_eye(self.t) + y_dis
+        t = self.t()
+        self.view.x_eye = self.view.x_eye(t) + x_dis
+        self.view.y_eye = self.view.y_eye(t) + y_dis
         if self._camera_auto_print:
             self.camera_print(props="x_eye y_eye")
 
     def camera_field_of_view(self, event=None, factor=None):
-        self.view.field_of_view_y = self.view.field_of_view_y(self.t) * factor
+        t = self.t()
+        self.view.field_of_view_y = self.view.field_of_view_y(t) * factor
         if self._camera_auto_print:
             self.camera_print(props="field_of_view_y")
 
     def camera_tilt(self, event=None, delta_angle=None):
-        x_eye = self.view.x_eye(self.t)
-        y_eye = self.view.y_eye(self.t)
-        z_eye = self.view.z_eye(self.t)
-        x_center = self.view.x_center(self.t)
-        y_center = self.view.y_center(self.t)
-        z_center = self.view.z_center(self.t)
+        t = self.t()
+        x_eye = self.view.x_eye(t)
+        y_eye = self.view.y_eye(t)
+        z_eye = self.view.z_eye(t)
+        x_center = self.view.x_center(t)
+        y_center = self.view.y_center(t)
+        z_center = self.view.z_center(t)
 
         dx = x_eye - x_center
         dy = y_eye - y_center
@@ -5315,23 +5539,25 @@ class Environment(object):
             self.camera_print(props="x_center y_center")
 
     def camera_rotate_axis(self, event=None, delta_angle=None):
-        adjusted_x = self.view.x_center(self.t) - self.view.x_eye(self.t)
-        adjusted_y = self.view.y_center(self.t) - self.view.y_eye(self.t)
+        t = self.t()
+        adjusted_x = self.view.x_center(t) - self.view.x_eye(t)
+        adjusted_y = self.view.y_center(t) - self.view.y_eye(t)
         cos_rad = math.cos(math.radians(delta_angle))
         sin_rad = math.sin(math.radians(delta_angle))
-        self.view.x_center = self.view.x_eye(self.t) + cos_rad * adjusted_x + sin_rad * adjusted_y
-        self.view.y_center = self.view.y_eye(self.t) - sin_rad * adjusted_x + cos_rad * adjusted_y
+        self.view.x_center = self.view.x_eye(t) + cos_rad * adjusted_x + sin_rad * adjusted_y
+        self.view.y_center = self.view.y_eye(t) - sin_rad * adjusted_x + cos_rad * adjusted_y
         if self._camera_auto_print:
             self.camera_print(props="x_eye y_eye")
 
     def camera_print(self, event=None, props=None):
+        t = self.t()
         if props is None:
             props = "x_eye y_eye z_eye x_center y_center z_center field_of_view_y"
         s = "view("
         items = []
         for prop in props.split():
-            items.append(f"{getattr(self.view,prop)(self.t):.4f}")
-        print("view(" + (",".join(f"{prop}={getattr(self.view,prop)(self.t):.4f}" for prop in props.split())) + f")  # t={self.t:.4f}")
+            items.append(f"{getattr(self.view,prop)(t):.4f}")
+        print("view(" + (",".join(f"{prop}={getattr(self.view,prop)(t):.4f}" for prop in props.split())) + f")  # t={t:.4f}")
 
     def _bind(self, tkinter_event, func):
         self.root.bind(tkinter_event, func)
@@ -5574,6 +5800,7 @@ class Environment(object):
             c._release(r, s0=s0)
         if self._trace:
             self.print_trace("", "", c.name() + " ended", s0=s0)
+        c.remove_animation_children()
         c.status._value = data
         c._scheduled_time = inf
         c._process = None
@@ -5582,6 +5809,9 @@ class Environment(object):
         print("eventlist ", s)
         for (t, priority, sequence, comp) in self._event_list:
             print("    ", self.time_to_str(t), comp.name(), "priority", priority)
+
+    def on_closing(self):
+        self.an_quit()
 
     def animation_parameters(
         self,
@@ -5597,6 +5827,7 @@ class Environment(object):
         x1=None,
         background_color=None,
         foreground_color=None,
+        background3d_color=None,
         fps=None,
         modelname=None,
         use_toplevel=None,
@@ -5706,6 +5937,10 @@ class Environment(object):
             in order to get a good contrast with the background color. |n|
             if omitted and background_color is also omitted, no change. At init of the
             environment, this will be set to black.
+
+        background3d_color : colorspec
+            color of the 3d background |n|
+            if omitted, no change. At init of the environment, this will be set to black.
 
         fps : float
             number of frames per second
@@ -5894,6 +6129,9 @@ class Environment(object):
                 raise ValueError(foreground_color + "not allowed for foreground_color")
             self._foreground_color = foreground_color
 
+        if background3d_color is not None:
+            self._background3d_color = background3d_color
+
         if modelname is not None:
             self._modelname = modelname
 
@@ -5934,7 +6172,7 @@ class Environment(object):
                     if Pythonista:
                         import sound
 
-                        class Play(object):
+                        class Play:
                             def __init__(self, s, repeat=-1):
                                 self.player = sound.Player(s)
                                 self.player.number_of_loops = repeat
@@ -5949,7 +6187,7 @@ class Environment(object):
 
                     self._audio.start = float(startstr)
 
-                    self._audio.t0 = self.t
+                    self._audio.t0 = self._t
 
                     self._audio.filename = audio_filename
 
@@ -5962,6 +6200,10 @@ class Environment(object):
             if animate3d == "?":
                 animate3d = can_animate3d(try_only=True)
             self._animate3d = animate3d
+            if not animate3d:
+                glut.glutDestroyWindow(self.window3d)
+                glut.glutMainLoopEvent()
+                self._gl_initialized = False
 
         if animate is not None:
             if animate == "?":
@@ -6021,7 +6263,9 @@ class Environment(object):
                             self._video_height_real = img.size[1]
                     else:
                         self._video_height_real = self._video_height
-                    if not self._blind_animation:
+                    if self._blind_animation:
+                        can_animate(try_only=True)
+                    else:
                         can_animate(try_only=False)
 
                     video_path = Path(video)
@@ -6031,6 +6275,7 @@ class Environment(object):
                     if extension == ".gif" and not ("*" in video_path.stem):
                         self._video_out = "gif"
                         self._images = []
+
                     elif extension == ".png" and not ("*" in video_path.stem):
                         self._video_out = "png"
                         self._images = []
@@ -6065,7 +6310,7 @@ class Environment(object):
                         self.frame_number = 0
                         self.audio_segments = []
                         if self._audio is not None:
-                            self._audio.start += self.t - self._audio.t0
+                            self._audio.start += self._t - self._audio.t0
                             self._audio.t0 = self.frame_number / self._fps
                             self.audio_segments.append(self._audio)
                             if Pythonista:
@@ -6080,8 +6325,9 @@ class Environment(object):
             if g.animation_env is not None:
                 g.animation_env._animate = self._animate
                 if not Pythonista:
-                    g.animation_env.root.destroy()
-                    g.animation_env.root = None
+                    if g.animation_env.root is not None:  # for blind animation to work properly
+                        g.animation_env.root.destroy()
+                        g.animation_env.root = None
                 g.animation_env = None
 
             if self._blind_animation:
@@ -6098,7 +6344,7 @@ class Environment(object):
                     can_animate(try_only=False)  # install modules
 
                     g.animation_env = self
-                    self.t = self._now  # for the call to set_start_animation
+                    self._t = self._now  # for the call to set_start_animation
                     self.paused = False
                     self.set_start_animation()
 
@@ -6118,6 +6364,7 @@ class Environment(object):
                         else:
                             self.root.overrideredirect(1)
                         self.root.geometry(f"+{self._position[0]}+{self._position[1]}")
+                        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
                         self.root.bind("-", lambda self: g.animation_env.an_half())
                         self.root.bind("+", lambda self: g.animation_env.an_double())
@@ -6195,7 +6442,7 @@ class Environment(object):
             self._video_out = None
             self._video = ""
 
-    def _capture_image(self, mode="RGBA", video_mode="2d"):
+    def _capture_image(self, mode="RGBA", video_mode="2d", include_topleft=True):
         if video_mode == "3d":
             if not self._animate3d:
                 raise ValueError("video_mode=='3d', but animate3d is not True")
@@ -6211,11 +6458,11 @@ class Environment(object):
         elif video_mode == "screen":
             image = ImageGrab.grab()
         else:
-            an_objects = sorted(self.an_objects, key=lambda obj: (-obj.layer(self.t), obj.sequence))  # has to be a copy!
+            an_objects = sorted(self.an_objects, key=lambda obj: (-obj.layer(self._t), obj.sequence))
             image = Image.new("RGBA", (self._width, self._height), self.colorspec_to_tuple("bg"))
             for ao in an_objects:
-                ao.make_pil_image(self.t)
-                if ao._image_visible:
+                ao.make_pil_image(self.t())
+                if ao._image_visible and (include_topleft or not ao.getattr("in_topleft", False)):
                     image.paste(ao._image, (int(ao._image_x), int(self._height - ao._image_y - ao._image.size[1])), ao._image)
         return image.convert(mode)
 
@@ -6416,7 +6663,7 @@ class Environment(object):
         """
         return self._scale
 
-    def user_to_screencoordinates_x(self, userx):
+    def user_to_screen_coordinates_x(self, userx):
         """
         converts a user x coordinate to a screen x coordinate
 
@@ -6431,7 +6678,7 @@ class Environment(object):
         """
         return (userx - self._x0) * self._scale
 
-    def user_to_screencoordinates_y(self, usery):
+    def user_to_screen_coordinates_y(self, usery):
         """
         converts a user x coordinate to a screen x coordinate
 
@@ -6446,7 +6693,7 @@ class Environment(object):
         """
         return (usery - self._y0) * self._scale
 
-    def user_to_screencoordinates_size(self, usersize):
+    def user_to_screen_coordinates_size(self, usersize):
         """
         converts a user size to a value to be used with screen coordinates
 
@@ -6461,7 +6708,7 @@ class Environment(object):
         """
         return usersize * self._scale
 
-    def screen_to_usercoordinates_x(self, screenx):
+    def screen_to_user_coordinates_x(self, screenx):
         """
         converts a screen x coordinate to a user x coordinate
 
@@ -6476,7 +6723,7 @@ class Environment(object):
         """
         return self._x0 + screenx / self._scale
 
-    def screen_to_usercoordinates_y(self, screeny):
+    def screen_to_user_coordinates_y(self, screeny):
         """
         converts a screen x coordinate to a user x coordinate
 
@@ -6491,7 +6738,7 @@ class Environment(object):
         """
         return self._y0 + screeny / self._scale
 
-    def screen_to_usercoordinates_size(self, screensize):
+    def screen_to_user_coordinates_size(self, screensize):
         """
         converts a screen size to a value to be used with user coordinates
 
@@ -6756,6 +7003,24 @@ class Environment(object):
         if value is not None:
             self.animation_parameters(background_color=value, animate=None)
         return self._background_color
+
+    def background3d_color(self, value=None):
+        """
+        background3d_color of the animation
+
+        Parameters
+        ----------
+        value : colorspec
+            new background_color |n|
+            if not specified, no change
+
+        Returns
+        -------
+        background3d_color of animation : colorspec
+        """
+        if value is not None:
+            self.animation_parameters(background3d_color=value)
+        return self._background3d_color
 
     def foreground_color(self, value=None):
         """
@@ -7156,7 +7421,15 @@ class Environment(object):
         -------
         the current simulation time : float
         """
-        return self._now - self.env._offset
+        return self._now - self._offset
+
+    def t(self):
+        """
+        Returns
+        -------
+        the current simulation animation time : float
+        """
+        return (self._t if self._animate else self._now) - self._offset
 
     def reset_now(self, new_now=0):
         """
@@ -7386,27 +7659,27 @@ class Environment(object):
                 self.animation3d_init()
                 self._camera_control()
                 self.start_animation_clocktime = time.time()
-                self.start_animation_time = self.t
+                self.start_animation_time = self._t
 
             tick_start = time.time()
 
             if self._synced or self._video:  # video forces synced
                 if self._video:
-                    self.t = self.video_t
+                    self._t = self.video_t
                 else:
                     if self.paused:
-                        self.t = self.start_animation_time
+                        self._t = self.start_animation_time
                     else:
-                        self.t = self.start_animation_time + ((time.time() - self.start_animation_clocktime) * self._speed)
+                        self._t = self.start_animation_time + ((time.time() - self.start_animation_clocktime) * self._speed)
 
-                while self.peek() < self.t:
+                while self.peek() < self._t:
                     self.step()
                     if not (self.running and self._animate):
                         if self.root is not None:
                             self.root.quit()
                         return
                     if self.paused:
-                        self.t = self.start_animation_time = self._now
+                        self._t = self.start_animation_time = self._now
                         break
 
             else:
@@ -7415,7 +7688,7 @@ class Environment(object):
 
                     if not self._current_component._suppress_pause_at_step:
                         self._step_pressed = False
-                    self.t = self._now
+                    self._t = self._now
 
             if not (self.running and self._animate):
                 if self.root is not None:
@@ -7425,15 +7698,18 @@ class Environment(object):
             if not self.paused:
                 self.frametimes.append(time.time())
 
-            self.an_objects.sort(key=lambda obj: (-obj.layer(self.t), obj.sequence))
+            t = self.t()
+
+            self.animation_pre_tick(t)
+            self.animation_pre_tick_sys(t)
+
+            an_objects = sorted(self.an_objects, key=lambda obj: (-obj.layer(self._t), obj.sequence))
+
             canvas_objects_iter = iter(g.canvas_objects[:])
             co = next(canvas_objects_iter, None)
-            self.animation_pre_tick(self.t)
-            self.animation_pre_tick_sys(self.t)
             overflow_image = None
-            for ao in self.an_objects:
-                ao.make_pil_image(self.t)
-
+            for ao in an_objects:
+                ao.make_pil_image(t)
                 if ao._image_visible:
                     if co is None:
                         if len(g.canvas_objects) >= self._maximum_number_of_bitmaps:
@@ -7478,16 +7754,17 @@ class Environment(object):
                     g.canvas.itemconfig(g.canvas_object_overflow_image, image=im)
 
             if self._animate3d:
-                t = self.t
                 self._exclude_from_animation = "*"  # makes that both video and non video over2d animation objects are shown
-                self.an_objects3d.sort(key=lambda obj: (obj.layer(t), obj.sequence))
-                for an in self.an_objects3d:
-                    visible = an.visible(self.t)
-                    if visible:
-                        an.draw(t)
+                an_objects3d = sorted(self.an_objects3d, key=lambda obj: (obj.layer(self._t), obj.sequence))
+                for an in an_objects3d:
+                    if an.keep(t):
+                        if an.visible(t):
+                            an.draw(t)
+                    else:
+                        an.remove()
                 self._exclude_from_animation = "only in video"
 
-            self.animation_post_tick(self.t)
+            self.animation_post_tick(t)
 
             while co is not None:
                 g.canvas.delete(co)
@@ -7562,39 +7839,48 @@ class Environment(object):
             Environment.cached_modelname_width = [self._modelname, self.env.getwidth(self._modelname + " : a ", font="", fontsize=18)]
         return Environment.cached_modelname_width[1]
 
-    def modelname_text(self, t):
-        return self._modelname + " : a"
-
-    def modelname_visible(self, t):
-        return self._modelname != ""
-
-    def modelname_x_logo(self, t):
-        return self.modelname_width() + 8
-
-    def modelname_x_model(self, t):
-        return self.modelname_width() + 69
-
-    def modelname_image(self, t):
-        return self.salabim_logo()
-
     def an_modelname(self):
         """
         function to show the modelname |n|
-        called by run(), if animation is True. |n|
         may be overridden to change the standard behaviour.
         """
 
         y = -68
-        an = Animate(text="", x0=8, y0=y, anchor="w", fontsize0=18, screen_coordinates=True, xy_anchor="nw", env=self)
-        an.visible = self.modelname_visible
-        an.text = self.modelname_text
-        an = Animate(image="", y0=y + 1, offsety0=5, anchor="w", width0=61, screen_coordinates=True, xy_anchor="nw", env=self)
-        an.visible = self.modelname_visible
-        an.x = self.modelname_x_logo
-        an.image = self.modelname_image
-        an = Animate(text=" model", y0=y, anchor="w", fontsize0=18, screen_coordinates=True, xy_anchor="nw", env=self)
-        an.visible = self.modelname_visible
-        an.x = self.modelname_x_model
+        AnimateText(
+            text=lambda: self._modelname + " : a",
+            x=8,
+            y=y,
+            text_anchor="w",
+            fontsize=18,
+            font="",
+            screen_coordinates=True,
+            xy_anchor="nw",
+            env=self,
+            visible=lambda: self._modelname,
+        )
+        AnimateImage(
+            image=lambda: self.salabim_logo(),
+            x=lambda: self.modelname_width() + 8,
+            y=y + 1,
+            offsety=5,
+            anchor="w",
+            width=61,
+            screen_coordinates=True,
+            xy_anchor="nw",
+            visible=lambda: self._modelname,
+        )
+        an = AnimateText(
+            text=" model",
+            x=lambda: self.modelname_width() + 69,
+            y=y,
+            text_anchor="w",
+            fontsize=18,
+            font="",
+            screen_coordinates=True,
+            xy_anchor="nw",
+            visible=lambda: self._modelname,
+            env=self,
+        )
 
     def an_menu_buttons(self):
         """
@@ -7643,16 +7929,15 @@ class Environment(object):
         else:
             fillcolor = "red"
             color = "white"
+
         uio = AnimateButton(x=38 + 5 * 60, y=-21, text="Stop", width=50, action=self.env.an_quit, env=self, fillcolor=fillcolor, color=color, xy_anchor="nw")
         uio.in_topleft = True
 
-        uio = Animate(x0=38 + 3 * 60, y0=-35, text="", anchor="N", fontsize0=15, screen_coordinates=True, xy_anchor="nw")
-        uio.text = self.syncedtext
-        uio.in_topleft = True
+        ao = AnimateText(x=38 + 3 * 60, y=-35, text=self.syncedtext, text_anchor="N", fontsize=15, font="", screen_coordinates=True, xy_anchor="nw")
+        ao.in_topleft = True
 
-        uio = Animate(x0=38 + 4 * 60, y0=-35, text="", anchor="N", fontsize0=15, screen_coordinates=True, xy_anchor="nw")
-        uio.text = self.tracetext
-        uio.in_topleft = True
+        ao = AnimateText(x=38 + 4 * 60, y=-35, text=self.tracetext, text_anchor="N", fontsize=15, font="", screen_coordinates=True, xy_anchor="nw")
+        ao.in_topleft = True
 
     def an_synced_buttons(self):
         """
@@ -7691,24 +7976,23 @@ class Environment(object):
         uio = AnimateButton(x=38 + 5 * 60, y=-21, text="Stop", width=50, action=self.env.an_quit, env=self, fillcolor=fillcolor, color=color, xy_anchor="nw")
         uio.in_topleft = True
 
-        uio = Animate(x0=38 + 1.5 * 60, y0=-35, text="", textcolor0="fg", anchor="N", fontsize0=15, font="", screen_coordinates=True, xy_anchor="nw")
-        uio.text = self.speedtext
-        uio.in_topleft = True
+        ao = AnimateText(
+            x=38 + 1.5 * 60, y=-35, text=self.speedtext, textcolor="fg", text_anchor="N", fontsize=15, font="", screen_coordinates=True, xy_anchor="nw"
+        )
+        ao.in_topleft = True
 
-        uio = Animate(x0=38 + 3 * 60, y0=-35, text="", anchor="N", fontsize0=15, font="", screen_coordinates=True, xy_anchor="nw")
-        uio.text = self.syncedtext
-        uio.in_topleft = True
+        ao = AnimateText(x=38 + 3 * 60, y=-35, text=self.syncedtext, text_anchor="N", fontsize=15, font="", screen_coordinates=True, xy_anchor="nw")
+        ao.in_topleft = True
 
-        uio = Animate(x0=38 + 4 * 60, y0=-35, text="", anchor="N", fontsize0=15, font="", screen_coordinates=True, xy_anchor="nw")
-        uio.text = self.tracetext
-        uio.in_topleft = True
+        ao = AnimateText(x=38 + 4 * 60, y=-35, text=self.tracetext, text_anchor="N", fontsize=15, font="", screen_coordinates=True, xy_anchor="nw")
+        ao.in_topleft = True
 
     def remove_topleft_buttons(self):
         for uio in self.ui_objects[:]:
             if getattr(uio, "in_topleft", False):
                 uio.remove()
 
-        for ao in self.an_objects[:]:
+        for ao in self.an_objects.copy():
             if getattr(ao, "in_topleft", False):
                 ao.remove()
 
@@ -7718,14 +8002,14 @@ class Environment(object):
         called by run(), if animation is True. |n|
         may be overridden to change the standard behaviour.
         """
-        ao = Animate(
-            x0=-30 if Pythonista else 0,
-            y0=-11 if Pythonista else 0,
-            textcolor0="fg",
-            text="",
-            fontsize0=15,
+        ao = AnimateText(
+            x=-30 if Pythonista else 0,
+            y=-11 if Pythonista else 0,
+            textcolor="fg",
+            text=self.clocktext,
+            fontsize=15,
             font="mono",
-            anchor="ne",
+            text_anchor="ne",
             screen_coordinates=True,
             xy_anchor="ne",
             env=self,
@@ -7753,8 +8037,9 @@ class Environment(object):
         self.running = False
         self.stopped = True
         if not Pythonista:
-            self.root.destroy()
-            self.root = None
+            if self.root is not None:  # for blind animation to work properly
+                self.root.destroy()
+                self.root = None
         self.quit()
 
     def quit(self):
@@ -7782,7 +8067,7 @@ class Environment(object):
         self._step_pressed = True
         self.step()
         self.paused = True
-        self.t = self._now
+        self._t = self._now
         self.set_start_animation()
 
     def an_menu_go(self):
@@ -7811,7 +8096,7 @@ class Environment(object):
         if self._show_time:
             if s != "":
                 s += " "
-            s += "t=" + self.time_to_str(t - self.env._offset).lstrip()
+            s += "t=" + self.time_to_str(t).lstrip()
         return s
 
     def tracetext(self, t):
@@ -7831,10 +8116,10 @@ class Environment(object):
 
     def set_start_animation(self):
         self.frametimes = collections.deque(maxlen=30)
-        self.start_animation_time = self.t
+        self.start_animation_time = self._t
         self.start_animation_clocktime = time.time()
         if self._audio:
-            start_time = self.t - self._audio.t0 + self._audio.start
+            start_time = self._t - self._audio.t0 + self._audio.start
             if Pythonista:
                 if self._animate and self._synced and (not self._video):
                     if self.paused:
@@ -8008,6 +8293,34 @@ class Environment(object):
         vt1 = self.colorspec_to_tuple(v1)
         return tuple(int(c) for c in interpolate(t, t0, t1, vt0, vt1))
 
+    def color_interp(self, x, xp, fp):
+        """
+        linear interpolation of a color 
+
+        Parameters
+        ----------
+        x : float
+            target x-value
+
+        xp : list of float, tuples or lists
+            values on the x-axis
+
+        fp : list of colorspecs
+            values on the y-axis |n|
+            should be same length as xp
+
+        Returns
+        -------
+        interpolated color value : tuple
+
+        Notes
+        -----
+        If x < xp[0], fp[0] will be returned |n|
+        If x > xp[-1], fp[-1] will be returned |n|
+        """
+        fp_resolved = [self.colorspec_to_tuple(el) for el in fp]
+        return tuple(map(int, interp(x, xp, fp_resolved)))
+
     def colorspec_to_hex(self, colorspec, withalpha=True):
         v = self.colorspec_to_tuple(colorspec)
         if withalpha:
@@ -8021,7 +8334,7 @@ class Environment(object):
 
     def colorspec_to_gl_color_alpha(self, colorspec):
         color_tuple = self.colorspec_to_tuple(colorspec)
-        return (color_tuple[0] / 255, color_tuple[1] / 255, color_tuple[2] / 255), color_tuple[3]
+        return ((color_tuple[0] / 255, color_tuple[1] / 255, color_tuple[2] / 255), color_tuple[3])
 
     def pythonistacolor(self, colorspec):
         c = self.colorspec_to_tuple(colorspec)
@@ -8699,14 +9012,14 @@ class Environment(object):
             if falsy, disabled |n|
             if True, the t=0 will correspond to 1 January 1970 |n|
             if no time_unit is specified, but datetime0 is not falsy, time_unit will be set to seconds
-            
+
         Returns
         -------
         current value of datetime0 : bool or datetime.datetime
         """
         if datetime0 is not None:
             if datetime0:
-                if datetime0 == True:
+                if datetime0 is True:
                     self._datetime0 = datetime.datetime(1970, 1, 1)
                 else:
                     if not isinstance(datetime0, datetime.datetime):
@@ -8741,6 +9054,657 @@ class Environment(object):
                 sound.play_effect("game:Beep", pitch=0.3)
             except Exception:
                 pass
+
+
+class Animate2dBase(DynamicClass):
+    def __init__(self, type, locals_, argument_default, attached_to=None, attach_text=True):
+        super().__init__()
+        self.type = type
+        env = locals_["env"]
+        arg = locals_["arg"]
+        parent = locals_["parent"]
+        if attached_to is None and parent is not None:
+            if not isinstance(parent, Component):
+                raise ValueError(repr(parent) + " is not a component")
+            parent._animation_children.add(self)
+
+        screen_coordinates = locals_["screen_coordinates"]
+        over3d = locals_["over3d"]
+
+        self.env = g.default_env if env is None else env
+        self.sequence = self.env.serialize()
+        self.arg = self if arg is None else arg
+        self.over3d = _default_over3d if over3d is None else over3d
+        self.screen_coordinates = screen_coordinates
+        self.attached_to = attached_to
+        if attached_to:
+            for name in attached_to._dynamics:
+                setattr(self, name, lambda arg, t, name=name: getattr(self.attached_to, name)(t))
+                self.register_dynamic_attributes(name)
+
+        else:
+            for name, default in argument_default.items():
+                if locals_[name] is None:
+                    if not hasattr(self, name):
+                        setattr(self, name, default)
+                else:
+                    setattr(self, name, locals_[name])
+                self.register_dynamic_attributes(name)
+
+        self._image_ident = None  # denotes no image yet
+        self._image = None
+        self._image_x = 0
+        self._image_y = 0
+        self.canvas_object = None
+
+        if self.env._animate_debug:
+            self.caller = self.env._frame_to_lineno(_get_caller_frame(), add_filename=True)
+        else:
+            self.caller = "?. use env.animate_debug(True) to get the originating Animate location"
+
+        if attach_text:
+            self.depending_object = Animate2dBase(type="text", locals_=locals_, argument_default={}, attached_to=self, attach_text=False)
+        else:
+            self.depending_object = None
+        if not self.attached_to:
+            self.show()
+
+    def show(self):
+        if self.depending_object:
+            if self.over3d:
+                self.env.an_objects_over3d.add(self.depending_object)
+            else:
+                self.env.an_objects.add(self.depending_object)
+        if self.over3d:
+            self.env.an_objects_over3d.add(self)
+        else:
+            self.env.an_objects.add(self)
+
+    def remove(self):
+        if self.depending_object:
+            if self.over3d:
+                self.env.an_objects_over3d.discard(self.depending_object)
+            else:
+                self.env.an_objects.discard(self.depending_object)
+                self.canvas_object = None  # safety! even set for non tkinter
+
+        if self.over3d:
+            self.env.an_objects_over3d.discard(self)
+        else:
+            self.env.an_objects.discard(self)
+            self.canvas_object = None  # safety! even set for non tkinter
+
+    def is_removed(self):
+
+        if self.over3d:
+            return self not in self.env.an_over3d_objects
+        else:
+            return self not in self.env.an_objects
+
+    def make_pil_image(self, t):  # new style
+        try:
+            if self.keep(t):
+                visible = self.visible(t)
+                if self.env._exclude_from_animation == visible:
+                    visible = False
+            else:
+                self.remove()
+                visible = False
+
+            if visible:
+                if self.type == "text":  # checked so early as to avoid evaluation of x, y, angle, ...
+                    text = self.text(t)
+                    if (text is None) or (text.strip() == ""):
+                        self._image_visible = False
+                        return
+
+                self._image_ident_prev = self._image_ident
+
+                self._image_x_prev = self._image_x
+                self._image_y_prev = self._image_y
+
+                x = self.x(t)
+                y = self.y(t)
+                xy_anchor = self.xy_anchor(t)
+                if xy_anchor:
+                    x += self.env.xy_anchor_to_x(xy_anchor, screen_coordinates=self.screen_coordinates, over3d=self.over3d)
+                    y += self.env.xy_anchor_to_y(xy_anchor, screen_coordinates=self.screen_coordinates, over3d=self.over3d)
+
+                offsetx = self.offsetx(t)
+                offsety = self.offsety(t)
+                if not self.screen_coordinates:
+                    offsetx = offsetx * self.env._scale
+                    offsety = offsety * self.env._scale
+
+                angle = self.angle(t)
+
+                if self.type in ("polygon", "rectangle", "line", "circle"):
+
+                    if self.screen_coordinates:
+                        linewidth = self.linewidth(t)
+                    else:
+                        linewidth = self.linewidth(t) * self.env._scale
+
+                    linecolor = self.env.colorspec_to_tuple(self.linecolor(t))
+                    fillcolor = self.env.colorspec_to_tuple(self.fillcolor(t))
+
+                    cosa = math.cos(math.radians(angle))
+                    sina = math.sin(math.radians(angle))
+
+                    if self.screen_coordinates:
+                        qx = x
+                        qy = y
+                    else:
+                        qx = (x - self.env._x0) * self.env._scale
+                        qy = (y - self.env._y0) * self.env._scale
+
+                    if self.type == "rectangle":
+                        as_points = self.as_points(t)
+
+                        rectangle = tuple(de_none(self.spec(t)))
+                        self._image_ident = (tuple(rectangle), linewidth, linecolor, fillcolor, as_points, angle, self.screen_coordinates)
+                    elif self.type == "line":
+                        as_points = self.as_points(t)
+                        line = tuple(de_none(self.spec(t)))
+                        fillcolor = (0, 0, 0, 0)
+                        self._image_ident = (tuple(line), linewidth, linecolor, as_points, angle, self.screen_coordinates)
+                    elif self.type == "polygon":
+                        as_points = self.as_points(t)
+                        polygon = tuple(de_none(self.spec(t)))
+                        self._image_ident = (tuple(polygon), linewidth, linecolor, fillcolor, as_points, angle, self.screen_coordinates)
+                    elif self.type == "circle":
+                        as_points = False
+                        radius0 = self.radius(t)
+                        radius1 = self.radius1(t)
+                        if radius1 is None:
+                            radius1 = radius0
+                        arc_angle0 = self.arc_angle0(t)
+                        arc_angle1 = self.arc_angle1(t)
+                        draw_arc = bool(self.draw_arc(t))
+
+                        self._image_ident = (
+                            radius0,
+                            radius1,
+                            arc_angle0,
+                            arc_angle1,
+                            draw_arc,
+                            linewidth,
+                            linecolor,
+                            fillcolor,
+                            angle,
+                            self.screen_coordinates,
+                        )
+
+                    if self._image_ident != self._image_ident_prev:
+                        if self.type == "rectangle":
+                            p = [
+                                rectangle[0],
+                                rectangle[1],
+                                rectangle[2],
+                                rectangle[1],
+                                rectangle[2],
+                                rectangle[3],
+                                rectangle[0],
+                                rectangle[3],
+                                rectangle[0],
+                                rectangle[1],
+                            ]
+
+                        elif self.type == "line":
+                            p = line
+
+                        elif self.type == "polygon":
+                            p = list(polygon)
+                            if p[0:1] != p[-2:-1]:
+                                p.append(p[0])  # close the polygon
+                                p.append(p[1])
+
+                        elif self.type == "circle":
+                            if arc_angle0 > arc_angle1:
+                                arc_angle0, arc_angle1 = arc_angle1, arc_angle0
+                            arc_angle1 = min(arc_angle1, arc_angle0 + 360)
+
+                            if self.screen_coordinates:
+                                nsteps = int(math.sqrt(max(radius0, radius1)) * 6)
+                            else:
+                                nsteps = int(math.sqrt(max(radius0 * self.env._scale, radius1 * self.env._scale)) * 6)
+                            tarc_angle = 360 / nsteps
+                            p = [0, 0]
+
+                            arc_angle = arc_angle0
+                            ended = False
+                            while True:
+                                sint = math.sin(math.radians(arc_angle))
+                                cost = math.cos(math.radians(arc_angle))
+                                x, y = (radius0 * cost, radius1 * sint)
+                                p.append(x)
+                                p.append(y)
+                                if ended:
+                                    break
+                                arc_angle += tarc_angle
+                                if arc_angle >= arc_angle1:
+                                    arc_angle = arc_angle1
+                                    ended = True
+                            p.append(0)
+                            p.append(0)
+
+                        r = []
+                        minpx = inf
+                        minpy = inf
+                        maxpx = -inf
+                        maxpy = -inf
+                        minrx = inf
+                        minry = inf
+                        maxrx = -inf
+                        maxry = -inf
+                        for i in range(0, len(p), 2):
+                            px = p[i]
+                            py = p[i + 1]
+                            if not self.screen_coordinates:
+                                px *= self.env._scale
+                                py *= self.env._scale
+                            rx = px * cosa - py * sina
+                            ry = px * sina + py * cosa
+                            minpx = min(minpx, px)
+                            maxpx = max(maxpx, px)
+                            minpy = min(minpy, py)
+                            maxpy = max(maxpy, py)
+                            minrx = min(minrx, rx)
+                            maxrx = max(maxrx, rx)
+                            minry = min(minry, ry)
+                            maxry = max(maxry, ry)
+                            r.append(rx)
+                            r.append(ry)
+                        if maxrx == -inf:
+                            maxpx = 0
+                            minpx = 0
+                            maxpy = 0
+                            minpy = 0
+                            maxrx = 0
+                            minrx = 0
+                            maxry = 0
+                            minry = 0
+
+                        rscaled = []
+                        for i in range(0, len(r), 2):
+                            rscaled.append(r[i] - minrx + linewidth)
+                            rscaled.append(maxry - r[i + 1] + linewidth)
+                        rscaled = tuple(rscaled)  # to make it hashable
+
+                        if as_points:
+                            self._image = Image.new("RGBA", (int(maxrx - minrx + 2 * linewidth), int(maxry - minry + 2 * linewidth)), (0, 0, 0, 0))
+                            point_image = Image.new("RGBA", (int(linewidth), int(linewidth)), linecolor)
+
+                            for i in range(0, len(r), 2):
+                                rx = rscaled[i]
+                                ry = rscaled[i + 1]
+                                self._image.paste(point_image, (int(rx - 0.5 * linewidth), int(ry - 0.5 * linewidth)), point_image)
+
+                        else:
+                            self._image = Image.new("RGBA", (int(maxrx - minrx + 2 * linewidth), int(maxry - minry + 2 * linewidth)), (0, 0, 0, 0))
+                            draw = ImageDraw.Draw(self._image)
+                            if fillcolor[3] != 0:
+                                draw.polygon(rscaled, fill=fillcolor)
+                            if (round(linewidth) > 0) and (linecolor[3] != 0):
+                                if self.type == "circle" and not draw_arc:
+                                    draw.line(rscaled[2:-2], fill=linecolor, width=int(linewidth))
+                                    # get rid of the first and last point (=center)
+                                else:
+                                    draw.line(rscaled, fill=linecolor, width=int(round(linewidth)))
+                            del draw
+                        self.minrx = minrx
+                        self.minry = minry
+                        self.maxrx = maxrx
+                        self.maxry = maxry
+                        self.minpx = minpx
+                        self.minpy = minpy
+                        self.maxpx = maxpx
+                        self.maxpy = maxpy
+
+                    if self.type == "circle":
+                        self.env._centerx = qx
+                        self.env._centery = qy
+                        self.env._dimx = 2 * radius0
+                        self.env._dimy = 2 * radius1
+                    else:
+                        self.env._centerx = qx + (self.minrx + self.maxrx) / 2
+                        self.env._centery = qy + (self.minry + self.maxry) / 2
+                        self.env._dimx = self.maxpx - self.minpx
+                        self.env._dimy = self.maxpy - self.minpy
+
+                    self._image_x = qx + self.minrx - linewidth + (offsetx * cosa - offsety * sina)
+                    self._image_y = qy + self.minry - linewidth + (offsetx * sina + offsety * cosa)
+
+                elif self.type == "image":
+                    spec = self.image(t)
+                    image = spec_to_image(spec)
+                    width = self.width(t)
+                    if width is None:
+                        width = image.size[0]
+
+                    height = width * image.size[1] / image.size[0]
+                    if not self.screen_coordinates:
+                        width *= self.env._scale
+                        height *= self.env._scale
+
+                    angle = self.angle(t)
+
+                    anchor = self.anchor(t)
+                    if self.screen_coordinates:
+                        qx = x
+                        qy = y
+                    else:
+                        qx = (x - self.env._x0) * self.env._scale
+                        qy = (y - self.env._y0) * self.env._scale
+                        offsetx = offsetx * self.env._scale
+                        offsety = offsety * self.env._scale
+
+                    alpha = int(self.alpha(t))
+                    self._image_ident = (spec, width, height, angle, alpha)
+                    if self._image_ident != self._image_ident_prev:
+                        im1 = image.resize((int(width), int(height)), Image.ANTIALIAS)
+                        self.imwidth, self.imheight = im1.size
+                        if alpha != 255:
+                            if has_numpy():
+                                arr = numpy.asarray(im1).copy()
+                                arr_alpha = arr[:, :, 3]
+                                arr[:, :, 3] = arr_alpha * (alpha / 255)
+                                im1 = Image.fromarray(numpy.uint8(arr))
+                            else:
+                                pix = im1.load()
+                                for x in range(self.imwidth):
+                                    for y in range(self.imheight):
+                                        c = pix[x, y]
+                                        pix[x, y] = (c[0], c[1], c[2], int(c[3] * alpha / 255))
+                        self._image = im1.rotate(angle, expand=1)
+                    anchor_to_dis = {
+                        "ne": (-0.5, -0.5),
+                        "n": (0, -0.5),
+                        "nw": (0.5, -0.5),
+                        "e": (-0.5, 0),
+                        "center": (0, 0),
+                        "c": (0, 0),
+                        "w": (0.5, 0),
+                        "se": (-0.5, 0.5),
+                        "s": (0, 0.5),
+                        "sw": (0.5, 0.5),
+                    }
+                    dx, dy = anchor_to_dis[anchor.lower()]
+                    dx = dx * self.imwidth + offsetx
+                    dy = dy * self.imheight + offsety
+                    cosa = math.cos(math.radians(angle))
+                    sina = math.sin(math.radians(angle))
+                    ex = dx * cosa - dy * sina
+                    ey = dx * sina + dy * cosa
+                    imrwidth, imrheight = self._image.size
+
+                    self.env._centerx = qx + ex
+                    self.env._centery = qy + ey
+                    self.env._dimx = width
+                    self.env._dimy = height
+
+                    self._image_x = qx + ex - imrwidth / 2
+                    self._image_y = qy + ey - imrheight / 2
+
+                elif self.type == "text":
+                    # text contains self.text()
+                    textcolor = self.env.colorspec_to_tuple(self.textcolor(t))
+                    fontsize = self.fontsize(t)
+                    angle = self.angle(t)
+                    fontname = self.font(t)
+                    if not self.screen_coordinates:
+                        fontsize = fontsize * self.env._scale
+                        offsetx = offsetx * self.env._scale
+                        offsety = offsety * self.env._scale
+                    text_anchor = self.text_anchor(t)
+
+                    if self.attached_to:
+                        text_offsetx = self.text_offsetx(t)
+                        text_offsety = self.text_offsety(t)
+                        if not self.screen_coordinates:
+                            text_offsetx = text_offsetx * self.env._scale
+                            text_offsety = text_offsety * self.env._scale
+                        qx = self.env._centerx
+                        qy = self.env._centery
+                        anchor_to_dis = {
+                            "ne": (0.5, 0.5),
+                            "n": (0, 0.5),
+                            "nw": (-0.5, 0.5),
+                            "e": (0.5, 0),
+                            "center": (0, 0),
+                            "c": (0, 0),
+                            "w": (-0.5, 0),
+                            "se": (0.5, -0.5),
+                            "s": (0, -0.5),
+                            "sw": (-0.5, -0.5),
+                        }
+                        dis = anchor_to_dis[text_anchor.lower()]
+                        offsetx += text_offsetx + dis[0] * self.env._dimx - dis[0] * 4  # 2 extra at east or west
+                        offsety += text_offsety + dis[1] * self.env._dimy - (2 if dis[1] > 0 else 0)  # 2 extra at north
+                    else:
+                        if self.screen_coordinates:
+                            qx = x
+                            qy = y
+                        else:
+                            qx = (x - self.env._x0) * self.env._scale
+                            qy = (y - self.env._y0) * self.env._scale
+                    max_lines = self.max_lines(t)
+                    self._image_ident = (text, fontname, fontsize, angle, textcolor, max_lines)
+                    if self._image_ident != self._image_ident_prev:
+                        font, heightA = getfont(fontname, fontsize)
+
+                        lines = []
+                        for item in deep_flatten(text):
+                            for line in item.splitlines():
+                                lines.append(line.rstrip())
+
+                        if max_lines <= 0:  # 0 is all
+                            lines = lines[max_lines:]
+                        else:
+                            lines = lines[:max_lines]
+
+                        widths = [(font.getsize(line)[0] if line else 0) for line in lines]
+                        if widths:
+                            totwidth = max(widths)
+                        else:
+                            totwidth = 0
+                        number_of_lines = len(lines)
+                        lineheight = font.getsize("Ap")[1]
+                        totheight = number_of_lines * lineheight
+                        im = Image.new("RGBA", (int(totwidth + 0.1 * fontsize), int(totheight)), (0, 0, 0, 0))
+                        imwidth, imheight = im.size
+                        draw = ImageDraw.Draw(im)
+                        pos = 0
+                        for line, width in zip(lines, widths):
+                            if line:
+                                draw.text(xy=(0.1 * fontsize, pos), text=line, font=font, fill=textcolor)
+                            pos += lineheight
+                        # this code is to correct a bug in the rendering of text,
+                        # leaving a kind of shadow around the text
+                        del draw
+                        if textcolor[:3] != (0, 0, 0):  # black is ok
+                            if has_numpy():
+                                arr = numpy.asarray(im).copy()
+                                arr[:, :, 0] = textcolor[0]
+                                arr[:, :, 1] = textcolor[1]
+                                arr[:, :, 2] = textcolor[2]
+                                im = Image.fromarray(numpy.uint8(arr))
+                            else:
+                                pix = im.load()
+                                for y in range(imheight):
+                                    for x in range(imwidth):
+                                        pix[x, y] = (textcolor[0], textcolor[1], textcolor[2], pix[x, y][3])
+
+                        # end of code to correct bug
+
+                        self.imwidth, self.imheight = im.size
+                        self.heightA = heightA
+
+                        self._image = im.rotate(angle, expand=1)
+
+                    anchor_to_dis = {
+                        "ne": (-0.5, -0.5),
+                        "n": (0, -0.5),
+                        "nw": (0.5, -0.5),
+                        "e": (-0.5, 0),
+                        "center": (0, 0),
+                        "c": (0, 0),
+                        "w": (0.5, 0),
+                        "se": (-0.5, 0.5),
+                        "s": (0, 0.5),
+                        "sw": (0.5, 0.5),
+                    }
+                    dx, dy = anchor_to_dis[text_anchor.lower()]
+                    dx = dx * self.imwidth + offsetx - 0.1 * fontsize
+
+                    dy = dy * self.imheight + offsety
+                    cosa = math.cos(math.radians(angle))
+                    sina = math.sin(math.radians(angle))
+                    ex = dx * cosa - dy * sina
+                    ey = dx * sina + dy * cosa
+                    imrwidth, imrheight = self._image.size
+                    self._image_x = qx + ex - imrwidth / 2
+                    self._image_y = qy + ey - imrheight / 2
+                else:
+                    raise ValueError("Internal error: animate type" + self.type + "not recognized.")
+                if self.over3d:
+                    width = self.env._width3d
+                    height = self.env._height3d
+                else:
+                    width = self.env._width
+                    height = self.env._height
+
+                self._image_visible = (
+                    (self._image_x <= width)
+                    and (self._image_y <= height)
+                    and (self._image_x + self._image.size[0] >= 0)
+                    and (self._image_y + self._image.size[1] >= 0)
+                )
+            else:
+                self._image_visible = False
+        except Exception as e:
+            self.env._animate = False
+            self.env.running = False
+            traceback.print_exc()
+            raise type(e)(str(e) + " [from " + self.type + " animation object created in line " + self.caller + "]") from e
+
+
+class AnimateClassic(Animate2dBase):
+    def __init__(self, master, locals_):
+        super().__init__(locals_=locals_, type=master.type, argument_default={}, attach_text=False)
+        self.master = master
+
+    def text(self, t):
+        return self.master.text(t)
+
+    def x(self, t):
+        return self.master.x(t)
+
+    def y(self, t):
+        return self.master.y(t)
+
+    def layer(self, t):
+        return self.master.layer(t)
+
+    def visible(self, t):
+        return self.master.visible(t)
+
+    def keep(self, t):
+        return self.master.keep(t)
+
+    def xy_anchor(self, t):
+        return self.master.xy_anchor(t)
+
+    def offsetx(self, t):
+        return self.master.offsetx(t)
+
+    def offsety(self, t):
+        return self.master.offsety(t)
+
+    def angle(self, t):
+        return self.master.angle(t)
+
+    def textcolor(self, t):
+        return self.master.textcolor(t)
+
+    def text_anchor(self, t):
+        return self.master.text_anchor(t)
+
+    def fontsize(self, t):
+        return self.master.fontsize(t)
+
+    def font(self, t):
+        return self.master.font0
+
+    def max_lines(self, t):
+        return self.master.max_lines(t)
+
+    def image(self, t):
+        return self.master.image(t)
+
+    def width(self, t):
+        return self.master.width(t)
+
+    def anchor(self, t):
+        return self.master.anchor(t)
+
+    def alpha(self, t):
+        return self.master.alpha(t)
+
+    def linewidth(self, t):
+        return self.master.linewidth(t)
+
+    def linecolor(self, t):
+        return self.master.linecolor(t)
+
+    def fillcolor(self, t):
+        return self.master.fillcolor(t)
+
+    def as_points(self, t):
+        return self.master.as_points(t)
+
+    def spec(self, t):
+        if self.type == "line":
+            return self.master.line(t)
+        if self.type == "rectangle":
+            return self.master.rectangle(t)
+        if self.type == "polygon":
+            return self.master.polygon(t)
+
+    def radius(self, t):
+        circle = self.master.circle(t)
+        try:
+            return circle[0]
+        except TypeError:
+            return circle
+
+    def radius1(self, t):
+        circle = self.master.circle(t)
+        try:
+            return circle[1]
+        except (TypeError, IndexError):
+            return circle
+
+    def arc_angle0(self, t):
+        circle = self.master.circle(t)
+        try:
+            return circle[2]
+        except (TypeError, IndexError):
+            return 0
+
+    def arc_angle1(self, t):
+        circle = self.master.circle(t)
+        try:
+            return circle[3]
+        except (TypeError, IndexError):
+            return 360
+
+    def draw_arc(self, t):
+        circle = self.master.circle(t)
+        try:
+            return circle[4]
+        except (TypeError, IndexError):
+            return False
 
 
 class Animate:
@@ -9056,7 +10020,6 @@ class Animate:
         self._image_x = 0
         self._image_y = 0
         self.canvas_object = None
-        self.canvas_object_overflow_image = None
         self.over3d = _default_over3d if over3d is None else over3d
         self.screen_coordinates = screen_coordinates
 
@@ -9072,7 +10035,7 @@ class Animate:
             if not isinstance(parent, Component):
                 raise ValueError(repr(parent) + " is not a component")
             parent._animation_children.add(self)
-        self.keep = keep
+        self.keep0 = keep
         self.visible0 = visible
         self.screen_coordinates = screen_coordinates
         self.sequence = self.env.serialize()
@@ -9156,10 +10119,16 @@ class Animate:
             self.caller = self.env._frame_to_lineno(_get_caller_frame(), add_filename=True)
         else:
             self.caller = "?. use env.animate_debug(True) to get the originating Animate location"
+        """
         if over3d:
             self.env.an_objects_over3d.append(self)
         else:
             self.env.an_objects.append(self)
+        """
+
+        arg = None  # just to make Animate2dBase happy
+
+        self.animation_object = AnimateClassic(master=self, locals_=locals())
 
     def update(
         self,
@@ -9180,6 +10149,7 @@ class Animate:
         text=None,
         font=None,
         anchor=None,
+        xy_anchor0=None,
         max_lines=None,
         text_anchor=None,
         linewidth0=None,
@@ -9190,6 +10160,7 @@ class Animate:
         alpha0=None,
         fontsize0=None,
         width0=None,
+        xy_anchor1=None,
         as_points=None,
         t1=None,
         x1=None,
@@ -9209,7 +10180,6 @@ class Animate:
         alpha1=None,
         fontsize1=None,
         width1=None,
-        xy_anchor=None,
     ):
         """
         updates an animation object
@@ -9395,7 +10365,7 @@ class Animate:
         if layer is not None:
             self.layer0 = layer
         if keep is not None:
-            self.keep = keep
+            self.keep0 = keep
         if visible is not None:
             self.visible0 = visible
         self.circle0 = self.circle() if circle0 is None else circle0
@@ -9437,6 +10407,7 @@ class Animate:
         self.alpha0 = self.alpha(t) if alpha0 is None else alpha0
         self.fontsize0 = self.fontsize(t) if fontsize0 is None else fontsize0
         self.t0 = self.env._now if t0 is None else t0
+        self.xy_anchor0 = self.xy_anchor(t) if xy_anchor0 is None else xy_anchor0
 
         self.circle1 = self.circle0 if circle1 is None else circle1
         self.line1 = self.line0 if line1 is None else de_none(line1)
@@ -9456,10 +10427,12 @@ class Animate:
         self.alpha1 = self.alpha0 if alpha1 is None else alpha1
         self.fontsize1 = self.fontsize0 if fontsize1 is None else fontsize1
         self.width1 = self.width0 if width1 is None else width1
+        self.xy_anchor1 = self.xy_anchor0 if xy_anchor1 is None else xy_anchor1
 
         self.t1 = inf if t1 is None else t1
-        if self not in self.env.an_objects:
-            self.env.an_objects.append(self)
+
+    def show(self):
+        self.animation_object.show()
 
     def remove(self):
         """
@@ -9470,14 +10443,10 @@ class Animate:
         ----
         The animation object might be still updated, if required
         """
-        if self in self.env.ui_objects:
-            self.env.ui_objects.remove(self)
+        self.animation_object.remove()
 
-        if self in self.env.an_objects:
-            self.env.an_objects.remove(self)
-
-        if self in self.env.an_objects_over3d:
-            self.env.an_objects_over3d.remove(self)
+    def is_removed(self):
+        return self.animation_object.is_removed()
 
     def x(self, t=None):
         """
@@ -9912,9 +10881,25 @@ class Animate:
         Returns
         -------
         visible : bool
-            default behaviour: self.visible0 (visible given at creation or update)
+            default behaviour: self.visible0 and t >= self.t0 (visible given at creation or update)
         """
-        return self.visible0
+        return self.visible0 and t >= self.t0
+
+    def keep(self, t):
+        """
+        keep attribute of an animate object. May be overridden.
+
+        Parameters
+        ----------
+        t : float
+            current time
+
+        Returns
+        -------
+        keep : bool
+            default behaviour: self.keep0 or t <= self.t1 (visible given at creation or update)
+        """
+        return self.keep0 or t <= self.t1
 
     def image(self, t=None):
         """
@@ -9961,441 +10946,6 @@ class Animate:
             raise ValueError("more than one object given")
         return t
 
-    def make_pil_image(self, t):
-        try:
-            visible = self.visible(t)
-            if self.env._exclude_from_animation == visible:
-                visible = False
-            if (t >= self.t0) and ((t <= self.t1) or self.keep) and visible:
-                self._image_x_prev = self._image_x
-                self._image_y_prev = self._image_y
-                self._image_ident_prev = self._image_ident
-
-                x = self.x(t)
-                y = self.y(t)
-                xy_anchor = self.xy_anchor(t)
-                if xy_anchor:
-                    x += self.env.xy_anchor_to_x(xy_anchor, screen_coordinates=self.screen_coordinates, over3d=self.over3d)
-                    y += self.env.xy_anchor_to_y(xy_anchor, screen_coordinates=self.screen_coordinates, over3d=self.over3d)
-
-                offsetx = self.offsetx(t)
-                offsety = self.offsety(t)
-                if not self.screen_coordinates:
-                    offsetx = offsetx * self.env._scale
-                    offsety = offsety * self.env._scale
-
-                angle = self.angle(t)
-                as_points = self.as_points(t)
-
-                if self.type in ("polygon", "rectangle", "line", "circle"):
-                    if self.screen_coordinates:
-                        linewidth = self.linewidth(t)
-                    else:
-                        linewidth = self.linewidth(t) * self.env._scale
-
-                    linecolor = self.env.colorspec_to_tuple(self.linecolor(t))
-                    fillcolor = self.env.colorspec_to_tuple(self.fillcolor(t))
-
-                    cosa = math.cos(math.radians(angle))
-                    sina = math.sin(math.radians(angle))
-
-                    if self.screen_coordinates:
-                        qx = x
-                        qy = y
-                    else:
-                        qx = (x - self.env._x0) * self.env._scale
-                        qy = (y - self.env._y0) * self.env._scale
-
-                    if self.type == "rectangle":
-                        rectangle = tuple(de_none(self.rectangle(t)))
-                        self._image_ident = (tuple(rectangle), linewidth, linecolor, fillcolor, as_points, angle, self.screen_coordinates)
-                    elif self.type == "line":
-                        line = tuple(de_none(self.line(t)))
-                        fillcolor = (0, 0, 0, 0)
-                        self._image_ident = (tuple(line), linewidth, linecolor, as_points, angle, self.screen_coordinates)
-                    elif self.type == "polygon":
-                        polygon = tuple(de_none(self.polygon(t)))
-                        self._image_ident = (tuple(polygon), linewidth, linecolor, fillcolor, as_points, angle, self.screen_coordinates)
-                    elif self.type == "circle":
-                        circle = self.circle(t)
-                        if isinstance(circle, list):
-                            circle = tuple(circle)
-                        self._image_ident = (circle, linewidth, linecolor, fillcolor, angle, self.screen_coordinates)
-
-                    if self._image_ident != self._image_ident_prev:
-                        if self.type == "rectangle":
-                            p = [
-                                rectangle[0],
-                                rectangle[1],
-                                rectangle[2],
-                                rectangle[1],
-                                rectangle[2],
-                                rectangle[3],
-                                rectangle[0],
-                                rectangle[3],
-                                rectangle[0],
-                                rectangle[1],
-                            ]
-
-                        elif self.type == "line":
-                            p = line
-
-                        elif self.type == "polygon":
-                            p = list(polygon)
-                            if p[0:1] != p[-2:-1]:
-                                p.append(p[0])  # close the polygon
-                                p.append(p[1])
-
-                        elif self.type == "circle":
-                            arc_angle0 = 0
-                            arc_angle1 = 360
-                            draw_arc = False
-                            if isinstance(circle, (list, tuple)):
-                                radius0 = radius1 = circle[0]
-                                if len(circle) > 1:
-                                    if circle[1] is not None:
-                                        radius1 = circle[1]
-                                if len(circle) > 3:
-                                    arc_angle0 = circle[2]
-                                    arc_angle1 = circle[3]
-                                if len(circle) > 4:
-                                    draw_arc = bool(circle[4])
-                            else:
-                                radius0 = radius1 = circle
-                            if arc_angle0 > arc_angle1:
-                                arc_angle0, arc_angle1 = arc_angle1, arc_angle0
-                            arc_angle1 = min(arc_angle1, arc_angle0 + 360)
-
-                            if self.screen_coordinates:
-                                nsteps = int(math.sqrt(max(radius0, radius1)) * 6)
-                            else:
-                                nsteps = int(math.sqrt(max(radius0 * self.env._scale, radius1 * self.env._scale)) * 6)
-                            tarc_angle = 360 / nsteps
-                            p = [0, 0]
-
-                            arc_angle = arc_angle0
-                            ended = False
-                            while True:
-                                sint = math.sin(math.radians(arc_angle))
-                                cost = math.cos(math.radians(arc_angle))
-                                x, y = (radius0 * cost, radius1 * sint)
-                                p.append(x)
-                                p.append(y)
-                                if ended:
-                                    break
-                                arc_angle += tarc_angle
-                                if arc_angle >= arc_angle1:
-                                    arc_angle = arc_angle1
-                                    ended = True
-                            p.append(0)
-                            p.append(0)
-
-                        r = []
-                        minpx = inf
-                        minpy = inf
-                        maxpx = -inf
-                        maxpy = -inf
-                        minrx = inf
-                        minry = inf
-                        maxrx = -inf
-                        maxry = -inf
-                        for i in range(0, len(p), 2):
-                            px = p[i]
-                            py = p[i + 1]
-                            if not self.screen_coordinates:
-                                px *= self.env._scale
-                                py *= self.env._scale
-                            rx = px * cosa - py * sina
-                            ry = px * sina + py * cosa
-                            minpx = min(minpx, px)
-                            maxpx = max(maxpx, px)
-                            minpy = min(minpy, py)
-                            maxpy = max(maxpy, py)
-                            minrx = min(minrx, rx)
-                            maxrx = max(maxrx, rx)
-                            minry = min(minry, ry)
-                            maxry = max(maxry, ry)
-                            r.append(rx)
-                            r.append(ry)
-                        if maxrx == -inf:
-                            maxpx = 0
-                            minpx = 0
-                            maxpy = 0
-                            minpy = 0
-                            maxrx = 0
-                            minrx = 0
-                            maxry = 0
-                            minry = 0
-
-                        rscaled = []
-                        for i in range(0, len(r), 2):
-                            rscaled.append(r[i] - minrx + linewidth)
-                            rscaled.append(maxry - r[i + 1] + linewidth)
-                        rscaled = tuple(rscaled)  # to make it hashable
-
-                        if as_points:
-                            self._image = Image.new("RGBA", (int(maxrx - minrx + 2 * linewidth), int(maxry - minry + 2 * linewidth)), (0, 0, 0, 0))
-                            point_image = Image.new("RGBA", (int(linewidth), int(linewidth)), linecolor)
-
-                            for i in range(0, len(r), 2):
-                                rx = rscaled[i]
-                                ry = rscaled[i + 1]
-                                self._image.paste(point_image, (int(rx - 0.5 * linewidth), int(ry - 0.5 * linewidth)), point_image)
-
-                        else:
-                            self._image = Image.new("RGBA", (int(maxrx - minrx + 2 * linewidth), int(maxry - minry + 2 * linewidth)), (0, 0, 0, 0))
-                            draw = ImageDraw.Draw(self._image)
-                            if fillcolor[3] != 0:
-                                draw.polygon(rscaled, fill=fillcolor)
-                            if (round(linewidth) > 0) and (linecolor[3] != 0):
-                                if self.type == "circle" and not draw_arc:
-                                    draw.line(rscaled[2:-2], fill=linecolor, width=int(linewidth))
-                                    # get rid of the first and last point (=center)
-                                else:
-                                    draw.line(rscaled, fill=linecolor, width=int(round(linewidth)))
-                            del draw
-                        self.minrx = minrx
-                        self.minry = minry
-                        self.maxrx = maxrx
-                        self.maxry = maxry
-                        self.minpx = minpx
-                        self.minpy = minpy
-                        self.maxpx = maxpx
-                        self.maxpy = maxpy
-                        if self.type == "circle":
-                            self.radius0 = radius0
-                            self.radius1 = radius1
-
-                    if self.type == "circle":
-                        self.env._centerx = qx
-                        self.env._centery = qy
-                        self.env._dimx = 2 * self.radius0
-                        self.env._dimy = 2 * self.radius1
-                    else:
-                        self.env._centerx = qx + (self.minrx + self.maxrx) / 2
-                        self.env._centery = qy + (self.minry + self.maxry) / 2
-                        self.env._dimx = self.maxpx - self.minpx
-                        self.env._dimy = self.maxpy - self.minpy
-
-                    self._image_x = qx + self.minrx - linewidth + (offsetx * cosa - offsety * sina)
-                    self._image_y = qy + self.minry - linewidth + (offsetx * sina + offsety * cosa)
-
-                elif self.type == "image":
-                    spec = self.image(t)
-                    image = spec_to_image(spec)
-                    width = self.width(t)
-                    if width is None:
-                        width = image.size[0]
-
-                    height = width * image.size[1] / image.size[0]
-                    if not self.screen_coordinates:
-                        width *= self.env._scale
-                        height *= self.env._scale
-
-                    angle = self.angle(t)
-
-                    anchor = self.anchor(t)
-                    if self.screen_coordinates:
-                        qx = x
-                        qy = y
-                    else:
-                        qx = (x - self.env._x0) * self.env._scale
-                        qy = (y - self.env._y0) * self.env._scale
-                        offsetx = offsetx * self.env._scale
-                        offsety = offsety * self.env._scale
-
-                    alpha = int(self.alpha(t))
-                    self._image_ident = (spec, width, height, angle, alpha)
-                    if self._image_ident != self._image_ident_prev:
-                        im1 = image.resize((int(width), int(height)), Image.ANTIALIAS)
-                        self.imwidth, self.imheight = im1.size
-                        if alpha != 255:
-                            if has_numpy():
-                                arr = numpy.asarray(im1).copy()
-                                arr_alpha = arr[:, :, 3]
-                                arr[:, :, 3] = arr_alpha * (alpha / 255)
-                                im1 = Image.fromarray(numpy.uint8(arr))
-                            else:
-                                pix = im1.load()
-                                for x in range(self.imwidth):
-                                    for y in range(self.imheight):
-                                        c = pix[x, y]
-                                        pix[x, y] = (c[0], c[1], c[2], int(c[3] * alpha / 255))
-                        self._image = im1.rotate(angle, expand=1)
-                    anchor_to_dis = {
-                        "ne": (-0.5, -0.5),
-                        "n": (0, -0.5),
-                        "nw": (0.5, -0.5),
-                        "e": (-0.5, 0),
-                        "center": (0, 0),
-                        "c": (0, 0),
-                        "w": (0.5, 0),
-                        "se": (-0.5, 0.5),
-                        "s": (0, 0.5),
-                        "sw": (0.5, 0.5),
-                    }
-                    dx, dy = anchor_to_dis[anchor.lower()]
-                    dx = dx * self.imwidth + offsetx
-                    dy = dy * self.imheight + offsety
-                    cosa = math.cos(math.radians(angle))
-                    sina = math.sin(math.radians(angle))
-                    ex = dx * cosa - dy * sina
-                    ey = dx * sina + dy * cosa
-                    imrwidth, imrheight = self._image.size
-
-                    self.env._centerx = qx + ex
-                    self.env._centery = qy + ey
-                    self.env._dimx = width
-                    self.env._dimy = height
-
-                    self._image_x = qx + ex - imrwidth / 2
-                    self._image_y = qy + ey - imrheight / 2
-
-                elif self.type == "text":
-                    text = self.text(t)
-                    if (text is None) or (text.strip() == ""):
-                        self._image_visible = False
-                        return
-                    textcolor = self.env.colorspec_to_tuple(self.textcolor(t))
-                    fontsize = self.fontsize(t)
-                    angle = self.angle(t)
-                    fontname = self.font(t)
-                    if not self.screen_coordinates:
-                        fontsize = fontsize * self.env._scale
-                        offsetx = offsetx * self.env._scale
-                        offsety = offsety * self.env._scale
-                    text_anchor = self.text_anchor(t)
-
-                    if hasattr(self, "dependent"):
-                        text_offsetx = self.text_offsetx(t)
-                        text_offsety = self.text_offsety(t)
-                        if not self.screen_coordinates:
-                            text_offsetx = text_offsetx * self.env._scale
-                            text_offsety = text_offsety * self.env._scale
-                        qx = self.env._centerx
-                        qy = self.env._centery
-                        anchor_to_dis = {
-                            "ne": (0.5, 0.5),
-                            "n": (0, 0.5),
-                            "nw": (-0.5, 0.5),
-                            "e": (0.5, 0),
-                            "center": (0, 0),
-                            "c": (0, 0),
-                            "w": (-0.5, 0),
-                            "se": (0.5, -0.5),
-                            "s": (0, -0.5),
-                            "sw": (-0.5, -0.5),
-                        }
-                        dis = anchor_to_dis[text_anchor.lower()]
-                        offsetx += text_offsetx + dis[0] * self.env._dimx - dis[0] * 4  # 2 extra at east or west
-                        offsety += text_offsety + dis[1] * self.env._dimy - (2 if dis[1] > 0 else 0)  # 2 extra at north
-                    else:
-                        if self.screen_coordinates:
-                            qx = x
-                            qy = y
-                        else:
-                            qx = (x - self.env._x0) * self.env._scale
-                            qy = (y - self.env._y0) * self.env._scale
-                    max_lines = self.max_lines(t)
-                    self._image_ident = (text, fontname, fontsize, angle, textcolor, max_lines)
-                    if self._image_ident != self._image_ident_prev:
-                        font, heightA = getfont(fontname, fontsize)
-
-                        lines = []
-                        for item in deep_flatten(text):
-                            for line in item.splitlines():
-                                lines.append(line.rstrip())
-
-                        if max_lines <= 0:  # 0 is all
-                            lines = lines[max_lines:]
-                        else:
-                            lines = lines[:max_lines]
-
-                        widths = [(font.getsize(line)[0] if line else 0) for line in lines]
-                        if widths:
-                            totwidth = max(widths)
-                        else:
-                            totwidth = 0
-                        number_of_lines = len(lines)
-                        lineheight = font.getsize("Ap")[1]
-                        totheight = number_of_lines * lineheight
-                        im = Image.new("RGBA", (int(totwidth + 0.1 * fontsize), int(totheight)), (0, 0, 0, 0))
-                        imwidth, imheight = im.size
-                        draw = ImageDraw.Draw(im)
-                        pos = 0
-                        for line, width in zip(lines, widths):
-                            if line:
-                                draw.text(xy=(0.1 * fontsize, pos), text=line, font=font, fill=textcolor)
-                            pos += lineheight
-                        # this code is to correct a bug in the rendering of text,
-                        # leaving a kind of shadow around the text
-                        del draw
-                        if textcolor[:3] != (0, 0, 0):  # black is ok
-                            if has_numpy():
-                                arr = numpy.asarray(im).copy()
-                                arr[:, :, 0] = textcolor[0]
-                                arr[:, :, 1] = textcolor[1]
-                                arr[:, :, 2] = textcolor[2]
-                                im = Image.fromarray(numpy.uint8(arr))
-                            else:
-                                pix = im.load()
-                                for y in range(imheight):
-                                    for x in range(imwidth):
-                                        pix[x, y] = (textcolor[0], textcolor[1], textcolor[2], pix[x, y][3])
-
-                        # end of code to correct bug
-
-                        self.imwidth, self.imheight = im.size
-                        self.heightA = heightA
-
-                        self._image = im.rotate(angle, expand=1)
-
-                    anchor_to_dis = {
-                        "ne": (-0.5, -0.5),
-                        "n": (0, -0.5),
-                        "nw": (0.5, -0.5),
-                        "e": (-0.5, 0),
-                        "center": (0, 0),
-                        "c": (0, 0),
-                        "w": (0.5, 0),
-                        "se": (-0.5, 0.5),
-                        "s": (0, 0.5),
-                        "sw": (0.5, 0.5),
-                    }
-                    dx, dy = anchor_to_dis[text_anchor.lower()]
-                    dx = dx * self.imwidth + offsetx - 0.1 * fontsize
-
-                    dy = dy * self.imheight + offsety
-                    cosa = math.cos(math.radians(angle))
-                    sina = math.sin(math.radians(angle))
-                    ex = dx * cosa - dy * sina
-                    ey = dx * sina + dy * cosa
-                    imrwidth, imrheight = self._image.size
-                    self._image_x = qx + ex - imrwidth / 2
-                    self._image_y = qy + ey - imrheight / 2
-                else:
-                    raise ValueError("Internal error: animate type" + self.type + "not recognized.")
-                if self.over3d:
-                    width = self.env._width3d
-                    height = self.env._height3d
-                else:
-                    width = self.env._width
-                    height = self.env._height
-
-                self._image_visible = (
-                    (self._image_x <= width)
-                    and (self._image_y <= height)
-                    and (self._image_x + self._image.size[0] >= 0)
-                    and (self._image_y + self._image.size[1] >= 0)
-                )
-            else:
-                self._image_visible = False
-        except Exception as e:
-            self.env._animate = False
-            self.env.running = False
-            traceback.print_exc()
-            raise type(e)(str(e) + " [from " + self.type + " animation object created in line " + self.caller + "]") from e
-
     def remove_background(self, im):
         pixels = im.load()
         background = pixels[0, 0]
@@ -10408,7 +10958,7 @@ class Animate:
                             pixels[x, y] = (255, 255, 255, 0)
 
 
-class AnimateEntry(object):
+class AnimateEntry:
     """
     defines a button
 
@@ -10511,7 +11061,7 @@ class AnimateEntry(object):
             self.installed = False
 
 
-class AnimateButton(object):
+class AnimateButton:
     """
     defines a button
 
@@ -10644,7 +11194,7 @@ class AnimateButton(object):
             self.installed = False
 
 
-class AnimateSlider(object):
+class AnimateSlider:
     """
     defines a slider
 
@@ -10848,7 +11398,7 @@ class AnimateSlider(object):
             self.installed = False
 
 
-class AnimateQueue(_AddAttr):
+class AnimateQueue(DynamicClass):
     """
     Animates the component in a queue.
 
@@ -10869,6 +11419,10 @@ class AnimateQueue(_AddAttr):
         if "n", waiting line runs northeards (i.e. from bottom to top) |n|
         if "e", waiting line runs eastwards (i.e. from left to right) (default) |n|
         if "s", waiting line runs southwards (i.e. from top to bottom)
+:
+
+    trajectory : Trajectory
+        trajectory to be followed. Overrides any given directory
 
     reverse : bool
         if False (default), display in normal order. If True, reversed.
@@ -10916,6 +11470,14 @@ class AnimateQueue(_AddAttr):
         if a parameter is a method as the instance |n|
         default: self (instance itself)
 
+    visible : bool
+        if False, nothing will be shown |n|
+        (default True)
+
+    keep : bool
+        if False, animation object will be taken from the animation objects. With show(), the animation can be reshown.
+        (default True)
+
     parent : Component
         component where this animation object belongs to (default None) |n|
         if given, the animation object will be removed
@@ -10939,6 +11501,7 @@ class AnimateQueue(_AddAttr):
         x=50,
         y=50,
         direction="w",
+        trajectory=None,
         max_length=None,
         xy_anchor="sw",
         reverse=False,
@@ -10953,7 +11516,10 @@ class AnimateQueue(_AddAttr):
         arg=None,
         parent=None,
         over3d=None,
+        keep=True,
+        visible=True,
     ):
+        super().__init__()
         _checkisqueue(queue)
         self._queue = queue
         self.xy_anchor = xy_anchor
@@ -10970,11 +11536,7 @@ class AnimateQueue(_AddAttr):
                 raise ValueError(repr(parent) + " is not a component")
             parent._animation_children.add(self)
         self.env = queue.env
-        self.vx = 0
-        self.vy = 0
-        self.vangle = 0
-        self.vlayer = 0
-        self.vanchor = "e"
+
         self.titleoffsetx = titleoffsetx
         self.titleoffsety = titleoffsety
         self.titlefont = titlefont
@@ -10982,105 +11544,155 @@ class AnimateQueue(_AddAttr):
         self.titlecolor = titlecolor
         self.title = title
         self.layer = layer
+        self.visible = visible
+        self.keep = keep
         self.over3d = _default_over3d if over3d is None else over3d
-        self.aotitle = AnimateText(
-            text=lambda: self.vtitle,
-            textcolor=lambda: self.vtitlecolor,
-            x=lambda: self.vx,
-            y=lambda: self.vy,
-            text_anchor=lambda: self.vanchor,
-            angle=lambda: self.vangle,
-            screen_coordinates=True,
-            fontsize=lambda: self.vtitlefontsize,
-            font=lambda: self.vtitlefont,
-            layer=lambda: self.vlayer,
-            over3d=self.over3d,
+        self.trajectory = trajectory
+        self.register_dynamic_attributes(
+            "xy_anchor x y id max_length direction reverse titleoffsetx titleoffsety titlefont titlefontsize titlecolor title layer visible keep"
         )
-        self.env.sys_objects.append(self)
+
+        self.ao_title = AnimateText(
+            text=lambda t: self.title(t),
+            textcolor=lambda t: self.titlecolor(t),
+            x=lambda: self.x_t,
+            y=lambda: self.y_t,
+            text_anchor=lambda: self.text_anchor_t,
+            angle=lambda: self.angle_t,
+            screen_coordinates=True,
+            fontsize=lambda t: self.titlefontsize(t),
+            font=lambda t: self.titlefont(t),
+            layer=lambda t: self.layer(t),
+            over3d=self.over3d,
+            visible=lambda: self.visible_t,
+        )
+        self.show()
 
     def update(self, t):
+        if not self.keep(t):
+            self.remove()
+            return
         prev_aos = self.current_aos
         self.current_aos = {}
-        xy_anchor = _call(self.xy_anchor, t, self.arg)
-        max_length = _call(self.max_length, t, self.arg)
-        x = _call(self.x, t, self.arg)
-        y = _call(self.y, t, self.arg)
-        direction = _call(self.direction, t, self.arg)
-        reverse = _call(self.reverse, t, self.arg)
-        titleoffsetx = _call(self.titleoffsetx, t, self.arg)
-        titleoffsety = _call(self.titleoffsety, t, self.arg)
-        title = _call(self.title, t, self.arg)
-        self.vtitle = self._queue.name() if title is None else title
-        self.vtitlefont = _call(self.titlefont, t, self.arg)
-        self.vtitlefontsize = _call(self.titlefontsize, t, self.arg)
-        self.vtitlecolor = _call(self.titlecolor, t, self.arg)
-        self.vlayer = _call(self.layer, t, self.arg)
+        xy_anchor = self.xy_anchor(t)
+        max_length = self.max_length(t)
+        direction = self.direction(t).lower()
+        if self.trajectory is None:
+            x = self.x(t)
+            y = self.y(t)
+        else:
+            direction = "t"
+            x = 0
+            y = 0
+
+            trajectory = self.trajectory
+
+        reverse = self.reverse(t)
+        self.visible_t = self.visible(t)
+        titleoffsetx = self.titleoffsetx(t)
+        titleoffsety = self.titleoffsety(t)
+
         x += self._queue.env.xy_anchor_to_x(xy_anchor, screen_coordinates=True, over3d=self.over3d)
         y += self._queue.env.xy_anchor_to_y(xy_anchor, screen_coordinates=True, over3d=self.over3d)
-        if direction == "e":
-            self.vx = x + (-25 if titleoffsetx is None else titleoffsetx)
-            self.vy = y + (25 if self.titleoffsety is None else titleoffsety)
-            self.vanchor = "sw"
-            self.vangle = 0
-        elif direction == "w":
-            self.vx = x + (25 if titleoffsetx is None else titleoffsetx)
-            self.vy = y + (25 if self.titleoffsety is None else titleoffsety)
-            self.vanchor = "se"
-            self.vangle = 0
-        elif direction == "n":
-            self.vx = x + (-25 if titleoffsetx is None else titleoffsetx)
-            self.vy = y + (-25 - self.vtitlefontsize if self.titleoffsety is None else titleoffsety)
-            self.vanchor = "sw"
-            self.vangle = 0
-        elif direction == "s":
-            self.vx = x + (-25 if titleoffsetx is None else titleoffsetx)
-            self.vy = y + (25 if self.titleoffsety is None else titleoffsety)
-            self.vanchor = "sw"
-            self.vangle = 0
 
+        if direction == "e":
+            self.x_t = x + (-25 if titleoffsetx is None else titleoffsetx)
+            self.y_t = y + (25 if titleoffsetx is None else titleoffsety)
+            self.text_anchor_t = "sw"
+            self.angle_t = 0
+        elif direction == "w":
+            self.x_t = x + (25 if titleoffsetx is None else titleoffsetx)
+            self.y_t = y + (25 if titleoffsety is None else titleoffsety)
+            self.text_anchor_t = "se"
+            self.angle_t = 0
+        elif direction == "n":
+            self.x_t = x + (-25 if titleoffsetx is None else titleoffsetx)
+            self.y_t = y + (-25 if titleoffsety is None else titleoffsety)
+            self.text_anchor_t = "sw"
+            self.angle_t = 0
+        elif direction == "s":
+            self.x_t = x + (-25 if titleoffsetx is None else titleoffsetx)
+            self.y_t = y + (25 if titleoffsety is None else titleoffsety)
+            self.text_anchor_t = "sw"
+            self.angle_t = 0
+        elif direction == "t":
+            self.x_t = trajectory.x(t=x, _t0=0) + (-25 if titleoffsetx is None else titleoffsetx)
+            self.y_t = trajectory.y(t=x, _t0=0) + (25 if titleoffsety is None else titleoffsety)
+            self.text_anchor_t = "sw"
+            self.angle_t = 0
         n = 0
         for c in reversed(self._queue) if reverse else self._queue:
-            if (max_length is not None) and n >= max_length:
+            if ((max_length is not None) and n >= max_length) or not self.visible_t:
                 break
-            if c not in prev_aos:
-                if self.over3d:
-                    c_animation_objects = c.animation_objects_over3d
-                else:
-                    c_animation_objects = c.animation_objects
 
+            if c not in prev_aos:
                 nargs = c.animation_objects.__code__.co_argcount
                 if nargs == 1:
-                    animation_objects = self.current_aos[c] = c_animation_objects()
+                    animation_objects = self.current_aos[c] = c.animation_objects()
                 else:
-                    animation_objects = self.current_aos[c] = c_animation_objects(self.id)
+                    animation_objects = self.current_aos[c] = c.animation_objects(self.id(t))
             else:
                 animation_objects = self.current_aos[c] = prev_aos[c]
                 del prev_aos[c]
+
             dimx = _call(animation_objects[0], t, c)
             dimy = _call(animation_objects[1], t, c)
             for ao in animation_objects[2:]:
-                if isinstance(ao, _Vis):
-                    ao.x = x
-                    ao.y = y
+                if isinstance(ao, AnimateClassic):
+                    if direction == "t":
+                        ao.x0 = trajectory.x(t=x, _t0=0)
+                        ao.y0 = trajectory.y(t=x, _t0=0)
+                    else:
+                        ao.x0 = x
+                        ao.y0 = y
                 else:
-                    ao.x0 = x
-                    ao.y0 = y
-            if direction.lower() == "w":
+                    if direction == "t":
+                        ao.x = trajectory.x(t=x, _t0=0)
+                        ao.y = trajectory.y(t=x, _t0=0)
+                        ao.angle = trajectory.angle(t=x, _t0=0)
+                    else:
+                        ao.x = x
+                        ao.y = y
+
+            if direction == "w":
                 x -= dimx
-            if direction.lower() == "s":
+            if direction == "s":
                 y -= dimy
-            if direction.lower() == "e":
+            if direction == "e":
                 x += dimx
-            if direction.lower() == "n":
+            if direction == "n":
                 y += dimy
+            if direction == "t":
+                x += dimx
+
             n += 1
 
         for animation_objects in prev_aos.values():
             for ao in animation_objects[2:]:
                 ao.remove()
 
+    def show(self):
+        """
+        show (unremove)
 
-class Animate3dQueue:
+        It is possible to use this method if already shown
+        """
+        self.ao_title.show()
+        self.env.sys_objects.add(self)
+        self.current_aos = {}
+
+    def remove(self):
+        self.env.sys_objects.discard(self)
+        self.ao_title.remove()
+        for animation_objects in self.current_aos.values():
+            for ao in animation_objects[2:]:
+                ao.remove()
+
+    def is_removed(self):
+        return self not in self.env.sys_objects
+
+
+class Animate3dQueue(DynamicClass):
     """
     Animates the component in a queue.
 
@@ -11126,6 +11738,14 @@ class Animate3dQueue:
         if a parameter is a method as the instance |n|
         default: self (instance itself)
 
+    visible : bool
+        if False, nothing will be shown |n|
+        (default True)
+
+    keep : bool
+        if False, animation object will be taken from the animation objects. With show(), the animation can be reshown.
+        (default True)
+
     parent : Component
         component where this animation object belongs to (default None) |n|
         if given, the animation object will be removed
@@ -11141,9 +11761,8 @@ class Animate3dQueue:
     - a method instance arg for time t, like self.state, actually leading to arg.state(t) to be called
     """
 
-    def __init__(
-        self, queue, x=0, y=0, z=0, direction="x+", y_displacement=0, z_displacement=0, max_length=None, reverse=False, layer=0, id=None, arg=None, parent=None
-    ):
+    def __init__(self, queue, x=0, y=0, z=0, direction="x+", max_length=None, reverse=False, layer=0, id=None, arg=None, parent=None, visible=True, keep=True):
+        super().__init__()
         _checkisqueue(queue)
         self._queue = queue
         self.x = x
@@ -11153,6 +11772,8 @@ class Animate3dQueue:
         self.arg = self if arg is None else arg
         self.max_length = max_length
         self.direction = direction
+        self.visible = visible
+        self.keep = keep
         self.reverse = reverse
         self.current_aos = {}
         if parent is not None:
@@ -11161,21 +11782,26 @@ class Animate3dQueue:
             parent._animation_children.add(self)
         self.env = queue.env
         self.layer = layer
-        self.env.sys_objects.append(self)
+        self.register_dynamic_attributes("x y z id max_length direction reverse layer visible keep")
+        self.show()
 
     def update(self, t):
+        if not self.keep(t):
+            self.remove()
+            return
+
         prev_aos = self.current_aos
         self.current_aos = {}
-        max_length = _call(self.max_length, t, self.arg)
-        x = _call(self.x, t, self.arg)
-        y = _call(self.y, t, self.arg)
-        z = _call(self.z, t, self.arg)
+        max_length = self.max_length(t)
+        x = self.x(t)
+        y = self.y(t)
+        z = self.z(t)
 
-        direction = _call(self.direction, t, self.arg).lower()
+        direction = self.direction(t).lower()
         if direction not in ("x+ x- y+ y- z+ z-").split():
             raise ValueError(f"direction {direction} not recognized")
 
-        reverse = _call(self.reverse, t, self.arg)
+        reverse = self.reverse(t)
 
         n = 0
         for c in reversed(self._queue) if reverse else self._queue:
@@ -11186,7 +11812,7 @@ class Animate3dQueue:
                 if nargs == 1:
                     animation_objects = self.current_aos[c] = c.animation3d_objects()
                 else:
-                    animation_objects = self.current_aos[c] = c.animation3d_objects(self.id)
+                    animation_objects = self.current_aos[c] = c.animation3d_objects(self.id(t))
             else:
                 animation_objects = self.current_aos[c] = prev_aos[c]
                 del prev_aos[c]
@@ -11227,86 +11853,127 @@ class Animate3dQueue:
         """
         return self._queue
 
+    def show(self):
+        """
+        show (unremove)
+
+        It is possible to use this method if already shown
+        """
+        self.env.sys_objects.add(self)
+
     def remove(self):
         for animation_objects in self.current_aos.values():
-            for ao in animation_objects[2:]:
+            for ao in animation_objects[3:]:
                 ao.remove()
-        self.aotitle.remove()
-        self.env.sys_objects.remove(self)
+        self.env.sys_objects.discard(self)
+
+    def is_removed(self):
+        return self not in self.env.sys_objects
 
 
-class AnimateCombined(collections.UserList):
+class AnimateCombined:
     """
     Combines several Animate? objects
 
     Parameters
     ----------
-    initial_contents : list
-        list of Animate? objets
+    animation_objects : iterable
+        iterable of Animate2dBase, Animate3dBase or AnimateCombined objects
+
+    **kwargs : dict
+        attributes to be set for objects in animation_objects  
 
     Notes
     -----
-    The AnimateCombined class acts as a list, where objects can be added or deleted with all usual list methods. |n|
-    When an attribute of an AnimateCombined is assigned, it will propagate to all members. |n|
-    When an attribute of an AnimateCombined is queried, the value of the first member will be returned |n|
+    When an attribute of an AnimateCombined is assigned, it will propagate to all members, provided it is already an attribute. |n|
+    When an attribute of an AnimateCombined is queried, the value of that attribute in any of animation_objects will be returned. 
+    In case of multiple values, a ValueError will be raised. Likewise, when this attribute does not exist in the 
+    animation_objects list. |n|
+    |n|
+    It is possible to use animation_objects with ::
+
+        an = sim.AnimationCombined(car.animation_objects[2:])
+        an = sim.AnimationCombined(car.animation3d_objects[3:])
     """
 
+    def __init__(self, animation_objects, **kwargs):
+        self.animation_objects = set()
+
+        for item in animation_objects:
+            self.add(item)
+
+        self.update(**kwargs)
+
+    def update(self, **kwargs):
+        """
+        Updated one or more attributes
+
+        Parameters
+        ----------
+        **kwargs : dict
+            attributes to be set  
+        """
+
+        for k, v in kwargs.items():
+            for item in self.animation_objects:
+                setattr(item, k, v)
+
     def __setattr__(self, key, value):
-        if key == "data":
+        if key == "animation_objects":
             super().__setattr__(key, value)
         else:
-            for item in self.data:
-                if not hasattr(item, key):
-                    raise AttributeError(repr(item) + " has no attribute " + key)
-                setattr(item, key, value)
+            for item in self.animation_objects:
+                if hasattr(item, key):
+                    setattr(item, key, value)
 
     def __getattr__(self, key):
-        if self.data:
-            for item in self.data:
-                if not hasattr(item, key):
-                    raise AttributeError(repr(item) + " has no attribute " + key)
-            return getattr(self.data[0], key)
-        else:
-            raise AttributeError("no items in " + repr(self))
+        for item in self.animation_objects:
+            if hasattr(item, key):
+                this_attr = item.getattribute_spec(key)
+                if "result" in locals():
+                    if this_attr != result:
+                        raise ValueError(f"multiple values for {key} found")
+                else:
+                    result = this_attr
+        if "result" in locals():
+            return result
+        raise ValueError(f"no value found for {key}")
 
-    def __setitem__(self, key, value):
-        if not isinstance(value, (_Vis, AnimateCombined)):
-            raise ValueError(str(value) + " not Animatexxx")
-        super().__setitem__(key, value)
+    def add(self, item):
+        """
+        Add Animate2dBase, Animate3dBase or AnimateCombined object
 
-    def append(self, value):
-        if not isinstance(value, (_Vis, AnimateCombined)):
-            raise ValueError(str(value) + " not Animatexxx")
-        super().append(value)
-
-    def extend(self, values):
-        for value in values:
-            self.append(value)
-
-    def __add__(self, other):
-        if not isinstance(other, (_Vis, AnimateCombined)):
+        Parameters
+        ----------
+        item : Animate2dBase, Animate3dBase or AnimateCombined 
+            to be added
+        """
+        if not isinstance(item, (AnimateCombined, Animate2dBase, Animate3dBase)):
             return NotImplemented
-        return AnimateCombined(self.data + [other])
-
-    def __radd__(self, other):
-        return self.__add__(other)
+        self.animation_objects.add(item)
 
     def remove(self):
         """
-        remove all members
+        remove all members from the animation
         """
-        for item in self.data:
+        for item in self.animation_objects:
             item.remove()
 
+    def show(self):
+        """
+        show all members in the animation
+        """
+        for item in self.animation_objects:
+            item.show()
+
+    def is_removed(self):
+        return all(item.is_removed() for item in self.animation_objects)
+
     def __repr__(self):
-        return self.__class__.__name__ + " (" + str(len(self.data)) + " items)"
+        return f"{self.__class__.__name__} ({','.join(repr(item) for item in self.animation_objects)})"
 
 
-class _Vis(_AddAttr):
-    pass
-
-
-class AnimateText(_Vis):
+class AnimateText(Animate2dBase):
     """
     Displays a text
 
@@ -11402,74 +12069,52 @@ class AnimateText(_Vis):
 
     def __init__(
         self,
-        text="",
-        x=0,
-        y=0,
-        fontsize=15,
-        textcolor="fg",
-        font="mono",
-        text_anchor="sw",
-        angle=0,
-        visible=True,
-        xy_anchor="",
-        layer=0,
+        text=None,
+        x=None,
+        y=None,
+        font=None,
+        fontsize=None,
+        textcolor=None,
+        text_anchor=None,
+        angle=None,
+        xy_anchor=None,
+        layer=None,
+        max_lines=None,
+        offsetx=None,
+        offsety=None,
+        arg=None,
+        visible=None,
+        keep=None,
+        parent=None,
         env=None,
         screen_coordinates=False,
-        arg=None,
-        parent=None,
-        offsetx=0,
-        offsety=0,
-        max_lines=0,
         over3d=None,
     ):
-        self.env = g.default_env if env is None else env
-
-        # the checks hasattr are req'd to not override methods of inherited classes
-        if not hasattr(self, "x"):
-            self.x = x
-        if not hasattr(self, "y"):
-            self.y = y
-        if not hasattr(self, "offsetx"):
-            self.offsetx = offsetx
-        if not hasattr(self, "offsety"):
-            self.offsety = offsety
-        if not hasattr(self, "text"):
-            self.text = text
-        if not hasattr(self, "max_lines"):
-            self.max_lines = max_lines
-        if not hasattr(self, "textcolor"):
-            self.textcolor = textcolor
-        if not hasattr(self, "angle"):
-            self.angle = angle
-        if not hasattr(self, "text_anchor"):
-            self.text_anchor = text_anchor
-        if not hasattr(self, "font"):
-            self.font = font
-        if not hasattr(self, "fontsize"):
-            self.fontsize = fontsize
-        if not hasattr(self, "visible"):
-            self.visible = visible
-        if not hasattr(self, "xy_anchor"):
-            self.xy_anchor = xy_anchor
-        if not hasattr(self, "layer"):
-            self.layer = layer
-
-        self.arg = self if arg is None else arg
-        self.over3d = _default_over3d if over3d is None else over3d
-        self.screen_coordinates = screen_coordinates
-
-        ao0 = _AnimateVis(text="", vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        self.aos = (ao0,)
-
-    def remove(self):
-        """
-        removes the animation oject
-        """
-        for ao in self.aos:
-            ao.remove()
+        super().__init__(
+            locals_=locals(),
+            type="text",
+            argument_default=dict(
+                text="",
+                x=0,
+                y=0,
+                fontsize=15,
+                textcolor="fg",
+                font="mono",
+                text_anchor="sw",
+                angle=0,
+                visible=True,
+                keep=True,
+                xy_anchor="",
+                layer=0,
+                offsetx=0,
+                offsety=0,
+                max_lines=0,
+            ),
+            attach_text=False,
+        )
 
 
-class AnimateRectangle(_Vis):
+class AnimateRectangle(Animate2dBase):
     """
     Displays a rectangle, optionally with a text
 
@@ -11577,97 +12222,68 @@ class AnimateRectangle(_Vis):
 
     def __init__(
         self,
-        spec=(0, 0, 0, 0),
-        x=0,
-        y=0,
-        fillcolor="fg",
-        linecolor="",
-        linewidth=1,
-        text="",
-        fontsize=15,
-        textcolor="bg",
-        font="",
-        angle=0,
-        xy_anchor="",
-        layer=0,
-        max_lines=0,
-        offsetx=0,
-        offsety=0,
-        as_points=False,
-        text_anchor="c",
-        text_offsetx=0,
-        text_offsety=0,
+        spec=None,
+        x=None,
+        y=None,
+        fillcolor=None,
+        linecolor=None,
+        linewidth=None,
+        text=None,
+        fontsize=None,
+        textcolor=None,
+        font=None,
+        angle=None,
+        xy_anchor=None,
+        layer=None,
+        max_lines=None,
+        offsetx=None,
+        offsety=None,
+        as_points=None,
+        text_anchor=None,
+        text_offsetx=None,
+        text_offsety=None,
         arg=None,
         parent=None,
-        visible=True,
+        visible=None,
+        keep=None,
         env=None,
         screen_coordinates=False,
         over3d=None,
     ):
 
-        self.env = g.default_env if env is None else env
-
-        # the checks hasattr are req'd to not override methods of inherited classes
-        if not hasattr(self, "spec"):
-            self.spec = spec
-        if not hasattr(self, "fillcolor"):
-            self.fillcolor = fillcolor
-        if not hasattr(self, "linecolor"):
-            self.linecolor = linecolor
-        if not hasattr(self, "linewidth"):
-            self.linewidth = linewidth
-        if not hasattr(self, "as_points"):
-            self.aspoint = as_points
-        if not hasattr(self, "x"):
-            self.x = x
-        if not hasattr(self, "y"):
-            self.y = y
-        if not hasattr(self, "offsetx"):
-            self.offsetx = offsetx
-        if not hasattr(self, "offsety"):
-            self.offsety = offsety
-        if not hasattr(self, "text_offsetx"):
-            self.text_offsetx = text_offsetx
-        if not hasattr(self, "text_offsety"):
-            self.text_offsety = text_offsety
-        if not hasattr(self, "text"):
-            self.text = text
-        if not hasattr(self, "max_lines"):
-            self.max_lines = max_lines
-        if not hasattr(self, "textcolor"):
-            self.textcolor = textcolor
-        if not hasattr(self, "text_anchor"):
-            self.text_anchor = text_anchor
-        if not hasattr(self, "angle"):
-            self.angle = angle
-        if not hasattr(self, "font"):
-            self.font = font
-        if not hasattr(self, "fontsize"):
-            self.fontsize = fontsize
-        if not hasattr(self, "visible"):
-            self.visible = visible
-        if not hasattr(self, "xy_anchor"):
-            self.xy_anchor = xy_anchor
-        if not hasattr(self, "layer"):
-            self.layer = layer
-        self.arg = self if arg is None else arg
-        self.over3d = _default_over3d if over3d is None else over3d
-        self.screen_coordinates = screen_coordinates
-
-        ao0 = _AnimateVis(rectangle0=(), vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1 = _AnimateVis(text="", vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1.dependent = True
-        self.aos = (ao0, ao1)
-
-    def remove(self):
-        """
-        removes the animation oject
-        """
-        for ao in self.aos:
-            ao.remove()
+        super().__init__(
+            locals_=locals(),
+            type="rectangle",
+            argument_default=dict(
+                spec=(0, 0, 0, 0),
+                x=0,
+                y=0,
+                fillcolor="fg",
+                linecolor="",
+                linewidth=1,
+                text="",
+                fontsize=15,
+                textcolor="bg",
+                font="",
+                angle=0,
+                xy_anchor="",
+                layer=0,
+                max_lines=0,
+                offsetx=0,
+                offsety=0,
+                as_points=False,
+                text_anchor="c",
+                text_offsetx=0,
+                text_offsety=0,
+                visible=True,
+                keep=True,
+                parent=None,
+            ),
+            attach_text=True,
+        )
 
 
-class AnimatePolygon(_Vis):
+class AnimatePolygon(Animate2dBase):
     """
     Displays a polygon, optionally with a text
 
@@ -11785,96 +12401,66 @@ class AnimatePolygon(_Vis):
 
     def __init__(
         self,
-        spec=(),
-        x=0,
-        y=0,
-        fillcolor="fg",
-        linecolor="",
-        linewidth=1,
-        text="",
-        fontsize=15,
-        textcolor="bg",
-        font="",
-        angle=0,
-        xy_anchor="",
-        layer=0,
-        max_lines=0,
-        offsetx=0,
-        offsety=0,
-        as_points=False,
-        text_anchor="c",
-        text_offsetx=0,
-        text_offsety=0,
+        spec=None,
+        x=None,
+        y=None,
+        fillcolor=None,
+        linecolor=None,
+        linewidth=None,
+        text=None,
+        fontsize=None,
+        textcolor=None,
+        font=None,
+        angle=None,
+        xy_anchor=None,
+        layer=None,
+        max_lines=None,
+        offsetx=None,
+        offsety=None,
+        as_points=None,
+        text_anchor=None,
+        text_offsetx=None,
+        text_offsety=None,
         arg=None,
         parent=None,
-        visible=True,
+        visible=None,
+        keep=None,
         env=None,
         screen_coordinates=False,
         over3d=None,
     ):
-        self.env = g.default_env if env is None else env
-
-        # the checks hasattr are req'd to not override methods of inherited classes
-        if not hasattr(self, "spec"):
-            self.spec = spec
-        if not hasattr(self, "fillcolor"):
-            self.fillcolor = fillcolor
-        if not hasattr(self, "linecolor"):
-            self.linecolor = linecolor
-        if not hasattr(self, "linewidth"):
-            self.linewidth = linewidth
-        if not hasattr(self, "as_points"):
-            self.aspoint = as_points
-        if not hasattr(self, "x"):
-            self.x = x
-        if not hasattr(self, "y"):
-            self.y = y
-        if not hasattr(self, "offsetx"):
-            self.offsetx = offsetx
-        if not hasattr(self, "offsety"):
-            self.offsety = offsety
-        if not hasattr(self, "text_offsetx"):
-            self.text_offsetx = text_offsetx
-        if not hasattr(self, "text_offsety"):
-            self.text_offsety = text_offsety
-        if not hasattr(self, "text"):
-            self.text = text
-        if not hasattr(self, "max_lines"):
-            self.max_lines = max_lines
-        if not hasattr(self, "textcolor"):
-            self.textcolor = textcolor
-        if not hasattr(self, "text_anchor"):
-            self.text_anchor = text_anchor
-        if not hasattr(self, "angle"):
-            self.angle = angle
-        if not hasattr(self, "font"):
-            self.font = font
-        if not hasattr(self, "fontsize"):
-            self.fontsize = fontsize
-        if not hasattr(self, "visible"):
-            self.visible = visible
-        if not hasattr(self, "xy_anchor"):
-            self.xy_anchor = xy_anchor
-        if not hasattr(self, "layer"):
-            self.layer = layer
-        self.arg = self if arg is None else arg
-        self.over3d = _default_over3d if over3d is None else over3d
-        self.screen_coordinates = screen_coordinates
-
-        ao0 = _AnimateVis(polygon0=(), vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1 = _AnimateVis(text="", vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1.dependent = True
-        self.aos = (ao0, ao1)
-
-    def remove(self):
-        """
-        removes the animation oject
-        """
-        for ao in self.aos:
-            ao.remove()
+        super().__init__(
+            locals_=locals(),
+            type="polygon",
+            argument_default=dict(
+                spec=(),
+                x=0,
+                y=0,
+                linecolor="",
+                linewidth=1,
+                fillcolor="fg",
+                text="",
+                fontsize=15,
+                textcolor="fg",
+                font="",
+                angle=0,
+                xy_anchor="",
+                layer=0,
+                max_lines=0,
+                offsetx=0,
+                offsety=0,
+                as_points=False,
+                text_anchor="c",
+                text_offsetx=0,
+                text_offsety=0,
+                visible=True,
+                keep=True,
+            ),
+            attach_text=True,
+        )
 
 
-class AnimateLine(_Vis):
+class AnimateLine(Animate2dBase):
     """
     Displays a line, optionally with a text
 
@@ -11988,93 +12574,67 @@ class AnimateLine(_Vis):
 
     def __init__(
         self,
-        spec=(),
-        x=0,
-        y=0,
-        linecolor="fg",
-        linewidth=1,
-        text="",
-        fontsize=15,
-        textcolor="fg",
-        font="",
-        angle=0,
-        xy_anchor="",
-        layer=0,
-        max_lines=0,
-        offsetx=0,
-        offsety=0,
-        as_points=False,
-        text_anchor="c",
-        text_offsetx=0,
-        text_offsety=0,
+        spec=None,
+        x=None,
+        y=None,
+        linecolor=None,
+        linewidth=None,
+        text=None,
+        fontsize=None,
+        textcolor=None,
+        font=None,
+        angle=None,
+        xy_anchor=None,
+        layer=None,
+        max_lines=None,
+        offsetx=None,
+        offsety=None,
+        as_points=None,
+        text_anchor=None,
+        text_offsetx=None,
+        text_offsety=None,
         arg=None,
         parent=None,
-        visible=True,
+        visible=None,
+        keep=None,
         env=None,
         screen_coordinates=False,
         over3d=None,
     ):
-        self.env = g.default_env if env is None else env
+        fillcolor = None  # required for make_pil_image
 
-        # the checks hasattr are req'd to not override methods of inherited classes
-        if not hasattr(self, "spec"):
-            self.spec = spec
-        if not hasattr(self, "linecolor"):
-            self.linecolor = linecolor
-        if not hasattr(self, "linewidth"):
-            self.linewidth = linewidth
-        if not hasattr(self, "as_points"):
-            self.aspoint = as_points
-        if not hasattr(self, "x"):
-            self.x = x
-        if not hasattr(self, "y"):
-            self.y = y
-        if not hasattr(self, "offsetx"):
-            self.offsetx = offsetx
-        if not hasattr(self, "offsety"):
-            self.offsety = offsety
-        if not hasattr(self, "text_offsetx"):
-            self.text_offsetx = text_offsetx
-        if not hasattr(self, "text_offsety"):
-            self.text_offsety = text_offsety
-        if not hasattr(self, "text"):
-            self.text = text
-        if not hasattr(self, "max_lines"):
-            self.max_lines = max_lines
-        if not hasattr(self, "textcolor"):
-            self.textcolor = textcolor
-        if not hasattr(self, "text_anchor"):
-            self.text_anchor = text_anchor
-        if not hasattr(self, "angle"):
-            self.angle = angle
-        if not hasattr(self, "font"):
-            self.font = font
-        if not hasattr(self, "fontsize"):
-            self.fontsize = fontsize
-        if not hasattr(self, "visible"):
-            self.visible = visible
-        if not hasattr(self, "xy_anchor"):
-            self.xy_anchor = xy_anchor
-        if not hasattr(self, "layer"):
-            self.layer = layer
-        self.fillcolor = ""
-        self.arg = self if arg is None else arg
-        self.over3d = _default_over3d if over3d is None else over3d
-        self.screen_coordinates = screen_coordinates
-        ao0 = _AnimateVis(line0=(), vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1 = _AnimateVis(text="", vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1.dependent = True
-        self.aos = (ao0, ao1)
-
-    def remove(self):
-        """
-        removes the animation oject
-        """
-        for ao in self.aos:
-            ao.remove()
+        super().__init__(
+            locals_=locals(),
+            type="line",
+            argument_default=dict(
+                spec=(),
+                x=0,
+                y=0,
+                linecolor="fg",
+                linewidth=1,
+                fillcolor="",
+                text="",
+                fontsize=15,
+                textcolor="fg",
+                font="",
+                angle=0,
+                xy_anchor="",
+                layer=0,
+                max_lines=0,
+                offsetx=0,
+                offsety=0,
+                as_points=False,
+                text_anchor="c",
+                text_offsetx=0,
+                text_offsety=0,
+                visible=True,
+                keep=True,
+            ),
+            attach_text=True,
+        )
 
 
-class AnimatePoints(_Vis):
+class AnimatePoints(Animate2dBase):
     """
     Displays a series of points, optionally with a text
 
@@ -12188,87 +12748,67 @@ class AnimatePoints(_Vis):
 
     def __init__(
         self,
-        spec=(),
-        x=0,
-        y=0,
-        linecolor="fg",
-        linewidth=4,
-        text="",
-        fontsize=15,
-        textcolor="fg",
-        font="",
-        angle=0,
-        xy_anchor="",
-        layer=0,
-        max_lines=0,
-        offsetx=0,
-        offsety=0,
-        text_anchor="c",
-        text_offsetx=0,
-        text_offsety=0,
+        spec=None,
+        x=None,
+        y=None,
+        linecolor=None,
+        linewidth=None,
+        text=None,
+        fontsize=None,
+        textcolor=None,
+        font=None,
+        angle=None,
+        xy_anchor=None,
+        layer=None,
+        max_lines=None,
+        offsetx=None,
+        offsety=None,
+        as_points=None,
+        text_anchor=None,
+        text_offsetx=None,
+        text_offsety=None,
         arg=None,
         parent=None,
-        visible=True,
+        visible=None,
+        keep=None,
         env=None,
         screen_coordinates=False,
-        over3d=True,
+        over3d=None,
     ):
-        self.env = g.default_env if env is None else env
+        fillcolor = None  # required for make_pil_image
 
-        # the checks hasattr are req'd to not override methods of inherited classes
-        if not hasattr(self, "spec"):
-            self.spec = spec
-        if not hasattr(self, "linecolor"):
-            self.linecolor = linecolor
-        if not hasattr(self, "linewidth"):
-            self.linewidth = linewidth
-        if not hasattr(self, "x"):
-            self.x = x
-        if not hasattr(self, "y"):
-            self.y = y
-        if not hasattr(self, "offsetx"):
-            self.offsetx = offsetx
-        if not hasattr(self, "offsety"):
-            self.offsety = offsety
-        if not hasattr(self, "text_offsetx"):
-            self.text_offsetx = text_offsetx
-        if not hasattr(self, "text_offsety"):
-            self.text_offsety = text_offsety
-        if not hasattr(self, "text"):
-            self.text = text
-        if not hasattr(self, "max_lines"):
-            self.max_lines = max_lines
-        if not hasattr(self, "textcolor"):
-            self.textcolor = textcolor
-        if not hasattr(self, "text_anchor"):
-            self.text_anchor = text_anchor
-        if not hasattr(self, "angle"):
-            self.angle = angle
-        if not hasattr(self, "font"):
-            self.font = font
-        if not hasattr(self, "fontsize"):
-            self.fontsize = fontsize
-        if not hasattr(self, "visible"):
-            self.visible = visible
-        if not hasattr(self, "xy_anchor"):
-            self.xy_anchor = xy_anchor
-        if not hasattr(self, "layer"):
-            self.layer = layer
-        self.fillcolor = ""
-        self.arg = self if arg is None else arg
-        self.over3d = _default_over3d if over3d is None else over3d
-        self.screen_coordinates = screen_coordinates
-        ao0 = _AnimateVis(line0=(), as_points=True, vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1 = _AnimateVis(text="", vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1.dependent = True
-        self.aos = (ao0, ao1)
-
-    def remove(self):
-        for ao in self.aos:
-            ao.remove()
+        super().__init__(
+            locals_=locals(),
+            type="line",
+            argument_default=dict(
+                spec=(),
+                x=0,
+                y=0,
+                linecolor="fg",
+                linewidth=1,
+                fillcolor="",
+                text="",
+                fontsize=15,
+                textcolor="fg",
+                font="",
+                angle=0,
+                xy_anchor="",
+                layer=0,
+                max_lines=0,
+                offsetx=0,
+                offsety=0,
+                as_points=True,
+                text_anchor="c",
+                text_offsetx=0,
+                text_offsety=0,
+                visible=True,
+                keep=True,
+            ),
+            attach_text=True,
+        )
 
 
-class AnimateCircle(_Vis):
+class AnimateCircle(Animate2dBase):
     """
     Displays a (partial) circle or (partial) ellipse , optionally with a text
 
@@ -12397,106 +12937,73 @@ class AnimateCircle(_Vis):
 
     def __init__(
         self,
-        radius=100,
+        radius=None,
         radius1=None,
-        arc_angle0=0,
-        arc_angle1=360,
-        draw_arc=False,
-        x=0,
-        y=0,
-        fillcolor="fg",
-        linecolor="",
-        linewidth=1,
-        text="",
-        fontsize=15,
-        textcolor="bg",
-        font="",
-        angle=0,
-        xy_anchor="",
-        layer=0,
-        max_lines=0,
-        offsetx=0,
-        offsety=0,
-        text_anchor="c",
-        text_offsetx=0,
-        text_offsety=0,
+        arc_angle0=None,
+        arc_angle1=None,
+        draw_arc=None,
+        x=None,
+        y=None,
+        fillcolor=None,
+        linecolor=None,
+        linewidth=None,
+        text=None,
+        fontsize=None,
+        textcolor=None,
+        font=None,
+        angle=None,
+        xy_anchor=None,
+        layer=None,
+        max_lines=None,
+        offsetx=None,
+        offsety=None,
+        text_anchor=None,
+        text_offsetx=None,
+        text_offsety=None,
         arg=None,
         parent=None,
-        visible=True,
+        visible=None,
+        keep=None,
         env=None,
         screen_coordinates=False,
         over3d=None,
     ):
-        self.env = g.default_env if env is None else env
 
-        # the checks hasattr are req'd to not override methods of inherited classes
-        if not hasattr(self, "radius"):
-            self.radius = radius
-        if not hasattr(self, "radius1"):
-            self.radius1 = radius1
-        if not hasattr(self, "arc_angle0"):
-            self.arc_angle0 = arc_angle0
-        if not hasattr(self, "arc_angle1"):
-            self.arc_angle1 = arc_angle1
-        if not hasattr(self, "draw_arc"):
-            self.draw_arc = draw_arc
-        if not hasattr(self, "fillcolor"):
-            self.fillcolor = fillcolor
-        if not hasattr(self, "linecolor"):
-            self.linecolor = linecolor
-        if not hasattr(self, "linewidth"):
-            self.linewidth = linewidth
-        if not hasattr(self, "angle"):
-            self.angle = angle
-        if not hasattr(self, "x"):
-            self.x = x
-        if not hasattr(self, "y"):
-            self.y = y
-        if not hasattr(self, "offsetx"):
-            self.offsetx = offsetx
-        if not hasattr(self, "offsety"):
-            self.offsety = offsety
-        if not hasattr(self, "text_offsetx"):
-            self.text_offsetx = text_offsetx
-        if not hasattr(self, "text_offsety"):
-            self.text_offsety = text_offsety
-        if not hasattr(self, "text"):
-            self.text = text
-        if not hasattr(self, "max_lines"):
-            self.max_lines = max_lines
-        if not hasattr(self, "textcolor"):
-            self.textcolor = textcolor
-        if not hasattr(self, "text_anchor"):
-            self.text_anchor = text_anchor
-        if not hasattr(self, "angle"):
-            self.angle = angle
-        if not hasattr(self, "font"):
-            self.font = font
-        if not hasattr(self, "fontsize"):
-            self.fontsize = fontsize
-        if not hasattr(self, "visible"):
-            self.visible = visible
-        if not hasattr(self, "xy_anchor"):
-            self.xy_anchor = xy_anchor
-        if not hasattr(self, "layer"):
-            self.layer = layer
-        self.arg = self if arg is None else arg
-        self.over3d = _default_over3d if over3d is None else over3d
-        self.screen_coordinates = screen_coordinates
-        ao0 = _AnimateVis(circle0=(), vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1 = _AnimateVis(text="", vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1.dependent = True
-        self.aos = (ao0, ao1)
-
-    def remove(self):
-        """
-        removes the animation oject
-        """
-        for ao in self.aos:
-            ao.remove()
+        super().__init__(
+            locals_=locals(),
+            type="circle",
+            argument_default=dict(
+                radius=100,
+                radius1=None,
+                arc_angle0=0,
+                arc_angle1=360,
+                draw_arc=False,
+                x=0,
+                y=0,
+                fillcolor="fg",
+                linecolor="",
+                linewidth=1,
+                text="",
+                fontsize=15,
+                textcolor="bg",
+                font="",
+                angle=0,
+                xy_anchor="",
+                layer=0,
+                max_lines=0,
+                offsetx=0,
+                offsety=0,
+                text_anchor="c",
+                text_offsetx=0,
+                text_offsety=0,
+                visible=True,
+                keep=True,
+            ),
+            attach_text=True,
+        )
 
 
-class AnimateImage(_Vis):
+class AnimateImage(Animate2dBase):
     """
     Displays an image, optionally with a text
 
@@ -12613,275 +13120,65 @@ class AnimateImage(_Vis):
 
     def __init__(
         self,
-        spec="",
-        x=0,
-        y=0,
+        image=None,
+        x=None,
+        y=None,
         width=None,
-        text="",
-        fontsize=15,
-        textcolor="bg",
-        font="",
-        angle=0,
-        alpha=255,
-        xy_anchor="",
-        layer=0,
-        max_lines=0,
-        offsetx=0,
-        offsety=0,
-        text_anchor="c",
-        text_offsetx=0,
-        text_offsety=0,
-        arg=None,
-        parent=None,
-        anchor="sw",
-        visible=True,
+        text=None,
+        fontsize=None,
+        textcolor=None,
+        font=None,
+        angle=None,
+        alpha=None,
+        xy_anchor=None,
+        layer=None,
+        max_lines=None,
+        offsetx=None,
+        offsety=None,
+        text_anchor=None,
+        text_offsetx=None,
+        text_offsety=None,
+        anchor=None,
+        visible=None,
+        keep=None,
         env=None,
+        arg=None,
         screen_coordinates=False,
         over3d=None,
+        parent=None,
     ):
-        self.env = g.default_env if env is None else env
 
-        # the checks hasattr are req'd to not override methods of inherited classes
-        if not hasattr(self, "spec"):
-            self.image = spec
-        if not hasattr(self, "width"):
-            self.width = width
-        if not hasattr(self, "x"):
-            self.x = x
-        if not hasattr(self, "y"):
-            self.y = y
-        if not hasattr(self, "offsetx"):
-            self.offsetx = offsetx
-        if not hasattr(self, "offsety"):
-            self.offsety = offsety
-        if not hasattr(self, "text_offsetx"):
-            self.text_offsetx = text_offsetx
-        if not hasattr(self, "text_offsety"):
-            self.text_offsety = text_offsety
-        if not hasattr(self, "text"):
-            self.text = text
-        if not hasattr(self, "max_lines"):
-            self.max_lines = max_lines
-        if not hasattr(self, "textcolor"):
-            self.textcolor = textcolor
-        if not hasattr(self, "text_anchor"):
-            self.text_anchor = text_anchor
-        if not hasattr(self, "angle"):
-            self.angle = angle
-        if not hasattr(self, "alpha"):
-            self.alpha = alpha
-        if not hasattr(self, "anchor"):
-            self.anchor = anchor
-        if not hasattr(self, "font"):
-            self.font = font
-        if not hasattr(self, "fontsize"):
-            self.fontsize = fontsize
-        if not hasattr(self, "visible"):
-            self.visible = visible
-        if not hasattr(self, "xy_anchor"):
-            self.xy_anchor = xy_anchor
-        if not hasattr(self, "layer"):
-            self.layer = layer
-
-        self.arg = self if arg is None else arg
-        self.over3d = _default_over3d if over3d is None else over3d
-        self.screen_coordinates = screen_coordinates
-        ao0 = _AnimateVis(image="", vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1 = _AnimateVis(text="", vis=self, screen_coordinates=screen_coordinates, over3d=self.over3d, env=env, parent=parent)
-        ao1.dependent = True
-        self.aos = (ao0, ao1)
-
-    def remove(self):
-        """
-        removes the animation oject
-        """
-        for ao in self.aos:
-            ao.remove()
-
-
-class _AnimateVis(Animate):
-    def __init__(self, vis, *args, **kwargs):
-        Animate.__init__(self, *args, **kwargs)
-        self.vis = vis
-
-    def x(self, t):
-        return _call(self.vis.x, t, self.vis.arg)
-
-    def y(self, t):
-        return _call(self.vis.y, t, self.vis.arg)
-
-    def offsetx(self, t):
-        return _call(self.vis.offsetx, t, self.vis.arg)
-
-    def offsety(self, t):
-        return _call(self.vis.offsety, t, self.vis.arg)
-
-    def text_offsetx(self, t):
-        return _call(self.vis.text_offsetx, t, self.vis.arg)
-
-    def text_offsety(self, t):
-        return _call(self.vis.text_offsety, t, self.vis.arg)
-
-    def rectangle(self, t):
-        return _call(self.vis.spec, t, self.vis.arg)
-
-    def line(self, t):
-        return _call(self.vis.spec, t, self.vis.arg)
-
-    def polygon(self, t):
-        return _call(self.vis.spec, t, self.vis.arg)
-
-    def circle(self, t):
-        return (
-            _call(self.vis.radius, t, self.vis.arg),
-            _call(self.vis.radius1, t, self.vis.arg),
-            _call(self.vis.arc_angle0, t, self.vis.arg),
-            _call(self.vis.arc_angle1, t, self.vis.arg),
-            _call(self.vis.draw_arc, t, self.vis.arg),
+        super().__init__(
+            locals_=locals(),
+            type="image",
+            argument_default=dict(
+                image="",
+                x=0,
+                y=0,
+                width=None,
+                text="",
+                fontsize=15,
+                textcolor="bg",
+                font="",
+                angle=0,
+                alpha=255,
+                xy_anchor="",
+                layer=0,
+                max_lines=0,
+                offsetx=0,
+                offsety=0,
+                text_anchor="c",
+                text_offsetx=0,
+                text_offsety=0,
+                anchor="sw",
+                visible=True,
+                keep=True,
+            ),
+            attach_text=True,
         )
 
-    def image(self, t):
-        return _call(self.vis.image, t, self.vis.arg)
 
-    def fillcolor(self, t):
-        return _call(self.vis.fillcolor, t, self.vis.arg)
-
-    def linecolor(self, t):
-        return _call(self.vis.linecolor, t, self.vis.arg)
-
-    def linewidth(self, t):
-        return _call(self.vis.linewidth, t, self.vis.arg)
-
-    def text(self, t):
-        return _call(self.vis.text, t, self.vis.arg)
-
-    def max_lines(self, t):
-        return _call(self.vis.max_lines, t, self.vis.arg)
-
-    def textcolor(self, t):
-        return _call(self.vis.textcolor, t, self.vis.arg)
-
-    def text_anchor(self, t):
-        return _call(self.vis.text_anchor, t, self.vis.arg)
-
-    def angle(self, t):
-        return _call(self.vis.angle, t, self.vis.arg)
-
-    def alpha(self, t):
-        return _call(self.vis.alpha, t, self.vis.arg)
-
-    def width(self, t):
-        return _call(self.vis.width, t, self.vis.arg)
-
-    def anchor(self, t):
-        return _call(self.vis.anchor, t, self.vis.arg)
-
-    def font(self, t):
-        return _call(self.vis.font, t, self.vis.arg)
-
-    def fontsize(self, t):
-        return _call(self.vis.fontsize, t, self.vis.arg)
-
-    def visible(self, t):
-        return _call(self.vis.visible, t, self.vis.arg)
-
-    def xy_anchor(self, t):
-        return _call(self.vis.xy_anchor, t, self.vis.arg)
-
-    def layer(self, t):
-        return _call(self.vis.layer, t, self.vis.arg)
-
-
-class _AosObject(object):  # for Monitor.animate
-    def __init__(self):
-        self.aos = []
-
-    def remove(self):
-        for ao in self.aos:
-            ao.remove()
-        self.aos = []
-
-
-class _Animate_t_x_Line(Animate):
-    def __init__(self, monitor, width, height, value_offsety, value_scale, value_map, t_scale, linewidth, *args, **kwargs):
-        self.monitor = monitor
-        self.width = width
-        self.height = height
-        self.value_offsety = value_offsety
-        self.value_scale = value_scale
-        self.value_map = value_map
-        self.t_scale = t_scale
-        self._linewidth = linewidth
-        self.as_level = self.monitor._level
-        self.t_width = self.width / self.t_scale
-        Animate.__init__(self, *args, **kwargs)
-
-    def t_to_x(self, t):
-        t = t - self.t0
-        if self.tnow - self.t0 > self.t_width:
-            t = t + self.t_width - (self.tnow - self.t0)
-            if t < 0:
-                t = 0
-                self.done = True
-        x = t * self.t_scale
-        return max(self._linewidth / 2, min(self.width - self._linewidth / 2, x))
-
-    def value_to_y(self, value):
-        if value == self.monitor.off:
-            value = 0
-        else:
-            try:
-                value = self.value_map(value)
-            except (ValueError, TypeError):
-                value = 0
-        return max(self._linewidth / 2, min(self.height - self._linewidth / 2, value * self.value_scale + self.value_offsety))
-
-    def line(self, t):
-        self.tnow = t
-        self.t0 = self.monitor.start
-        result = []
-        if len(self.monitor._x) != 0:
-            value = self.monitor._x[-1]
-        else:
-            value = 0
-        lastt = t
-        if self.as_level:
-            result.append(self.t_to_x(lastt))
-            result.append(self.value_to_y(value))
-        self.done = False
-        for value, t in zip(reversed(self.monitor._x), reversed(self.monitor._t)):
-            if self.as_level:
-                result.append(self.t_to_x(lastt))
-                result.append(self.value_to_y(value))
-            result.append(self.t_to_x(t))
-            result.append(self.value_to_y(value))
-            if self.done:
-                if not self.as_level:
-                    result.pop()  # remove the last outlier x
-                    result.pop()  # remove the last outlier y
-                break
-            lastt = t
-        return result
-
-
-class _Animate_t_Line(Animate):
-    def __init__(self, monitor, width, height, t_scale, *args, **kwargs):
-        self.monitor = monitor
-        self.t_scale = t_scale
-        self.width = width
-        self.height = height
-        self.t_width = self.width / self.t_scale
-        Animate.__init__(self, *args, **kwargs)
-
-    def line(self, t):
-        t = t - self.monitor.start
-        if t > self.t_width:
-            t = self.t_width
-        x = t * self.t_scale
-        return x, 0, x, self.height
-
-
-class Component(object):
+class Component:
     """Component object
 
     A salabim component is used as component (primarily for queueing)
@@ -13076,18 +13373,6 @@ class Component(object):
             self._reschedule(scheduled_time, priority, urgent, "activate", cap_now, extra=extra)
         self.setup(**kwargs)
 
-    def __del__(self):
-        self.remove_animation_children()
-
-    def remove_animation_children(self):
-        """
-        removes all animation objects which has this as a parent
-        """
-        if hasattr(self, "_animation_children"):  # prevent problems with not fully initialized components
-            for ao in self._animation_children:
-                ao.remove()
-            del self._animation_children
-
     def animation_objects(self, id):
         """
         defines how to display a component in AnimateQueue
@@ -13113,33 +13398,6 @@ class Component(object):
         size_x = 50
         size_y = 50
         ao0 = AnimateRectangle(text=str(self.sequence_number()), textcolor="bg", spec=(-20, -20, 20, 20), linewidth=0, fillcolor="fg")
-        return (size_x, size_y, ao0)
-
-    def animation_objects_over3d(self, id):
-        """
-        defines how to display a component in AnimateQueue in over3d mode
-
-        Parameters
-        ----------
-        id : any
-            id as given by AnimateQueue. Note that by default this the reference to the AnimateQueue object.
-
-        Returns
-        -------
-        List or tuple containg |n|
-            size_x : how much to displace the next component in x-direction, if applicable |n|
-            size_y : how much to displace the next component in y-direction, if applicable |n|
-            animation objects : instances of Animate class |n|
-            default behaviour: |n|
-            square of size 40 (displacements 50), with the sequence number centered.
-
-        Note
-        ----
-        If you override this method, be sure to use the same header, either with or without the id parameter. |n|
-        """
-        size_x = 50
-        size_y = 50
-        ao0 = AnimateRectangle(text=str(self.sequence_number()), textcolor="bg", spec=(-20, -20, 20, 20), linewidth=0, fillcolor="fg", over3d=True)
         return (size_x, size_y, ao0)
 
     def animation3d_objects(self, id):
@@ -14042,10 +14300,9 @@ class Component(object):
             if self._requests[r] > 0:
                 if self._requests[r] > (r._capacity - r._claimed_quantity + 1e-8):
                     return []
-            # 2022-05-08: Commenting this block out leads to expected negative claims for anonymous resources when doing several put requests for anonymous resources
-            # else:
-            #     if -self._requests[r] > r._claimed_quantity :
-            #         return []
+            else:
+                if -self._requests[r] > r._claimed_quantity + 1e-8:
+                    return []
         return list(self._requests.keys())
 
     def honor_any(self):
@@ -14521,6 +14778,18 @@ class Component(object):
             return None
         else:
             return self._process.__name__
+
+    def remove_animation_children(self):
+        """
+        removes animation children
+
+        Note
+        ----
+        Normally, the animation_children are removed automatically upon termination of a component (when it terminates)
+        """
+        for ao in self._animation_children:
+            ao.remove()
+        self._animation_children = set()
 
     def suppress_trace(self, value=None):
         """
@@ -15501,8 +15770,8 @@ class ComponentGenerator(Component):
 class _BlindVideoMaker(Component):
     def process(self):
         while True:
-            self.env.t = self.env._now
-            self.env.animation_pre_tick_sys(self.env.t)  # required to update sys objects, like AnimateQueue
+            self.env._t = self.env._now
+            self.env.animation_pre_tick_sys(self.env.t())  # required to update sys objects, like AnimateQueue
 
             self.env._save_frame()
             yield self.hold(self.env._speed / self.env._fps)
@@ -17721,7 +17990,7 @@ class Distribution(_Distribution):
         return self._mean
 
 
-class State(object):
+class State:
     """
     State
 
@@ -18151,7 +18420,7 @@ class State(object):
         return self._waiters
 
 
-class Resource(object):
+class Resource:
     """
     Resource
 
@@ -18167,8 +18436,12 @@ class Resource(object):
         it is defined in (lowercased)
 
     capacity : float
-        capacity of the resouce |n|
+        capacity of the resource |n|
         if omitted, 1
+
+    initial_claimed_quantity : float
+        initial claimed quantity. Only allowed to be non zero for anonymous resources |n|
+        if omitted, 0
 
     anonymous : bool
         anonymous specifier |n|
@@ -18197,6 +18470,7 @@ class Resource(object):
         self,
         name=None,
         capacity=1,
+        initial_claimed_quantity=0,
         anonymous=False,
         preemptive=False,
         honor_only_first=False,
@@ -18210,6 +18484,11 @@ class Resource(object):
             self.env = g.default_env
         else:
             self.env = env
+
+        if initial_claimed_quantity != 0:
+            if not anonymous:
+                raise ValueError("initial_claimed_quantity != 0 only allowed for anonymous resources")
+
         self._capacity = capacity
         self._honor_only_first = honor_only_first
         self._honor_only_highest_priority = honor_only_highest_priority
@@ -18223,7 +18502,7 @@ class Resource(object):
         self._claimers._isinternal = True
         self._claimers._isclaimers = True  # used by Component.isbumped()
         self.env._trace = savetrace
-        self._claimed_quantity = 0
+        self._claimed_quantity = initial_claimed_quantity
         self._anonymous = anonymous
         self._preemptive = preemptive
         self._minq = inf
@@ -18231,10 +18510,13 @@ class Resource(object):
 
         self.capacity = _CapacityMonitor("Capacity of " + self.name(), level=True, initial_tally=capacity, monitor=monitor, type="float", env=self.env)
         self.capacity.resource = self
-        self.claimed_quantity = _SystemMonitor("Claimed quantity of " + self.name(), level=True, initial_tally=0, monitor=monitor, type="float", env=self.env)
-        self.available_quantity = _SystemMonitor(
-            "Available quantity of " + self.name(), level=True, initial_tally=capacity, monitor=monitor, type="float", env=self.env
+        self.claimed_quantity = _SystemMonitor(
+            "Claimed quantity of " + self.name(), level=True, initial_tally=initial_claimed_quantity, monitor=monitor, type="float", env=self.env
         )
+        self.available_quantity = _SystemMonitor(
+            "Available quantity of " + self.name(), level=True, initial_tally=capacity - initial_claimed_quantity, monitor=monitor, type="float", env=self.env
+        )
+
         self.occupancy = _SystemMonitor("Occupancy of " + self.name(), level=True, initial_tally=0, monitor=monitor, type="float", env=self.env)
         if self.env._trace:
             self.env.print_trace("", "", self.name() + " create", "capacity=" + str(self._capacity) + (" anonymous" if self._anonymous else ""))
@@ -18657,7 +18939,7 @@ class _PeriodComponent(Component):
             yield self.hold(duration)
 
 
-class PeriodMonitor(object):
+class PeriodMonitor:
     """
     defines a number of period monitors for a given monitor.
 
@@ -18739,7 +19021,7 @@ class PeriodMonitor(object):
             self.perperiod = [Monitor(name=period_monitor_name, monitor=False, env=self.env) for period_monitor_name in period_monitor_names]
 
 
-class AudioClip(object):
+class AudioClip:
     @staticmethod
     def send(command):
         buffer = ctypes.c_buffer(255)
@@ -19181,7 +19463,109 @@ def interpolate(t, t0, t1, v0, v1):
         return _i(p, v0, v1)
 
 
-def interp(x, x_arr, y_arr):
+def searchsorted(a, v, side="left"):
+    """
+    search sorted
+
+    Parameters
+    ----------
+    a : iterable
+        iterable to be searched in, must be non descending
+
+    v : float
+        value to be searched for
+
+    side : string
+        If ‘left’ (default) the index of the first suitable location found is given.
+        If ‘right’, return the last such index.
+        If there is no suitable index, return either 0 or N (where N is the length of a).    
+
+    Returns
+    -------
+    Index where v should be inserted to maintain order : int
+
+    Note
+    ----
+    If numpy is installed, uses numpy.searchstarted
+    """
+
+    if has_numpy():
+        return numpy.searchsorted(a, v, side)
+
+    if side == "left":
+        return bisect.bisect_left(a, v)
+    if side == "right":
+        return bisect.bisect_right(a, v)
+    raise ValueError(f"{repr(side)} is an invalid value for the keyword 'side'")
+
+
+def arange(start, stop, step=1):
+    """
+    arange (like numpy)
+
+    Parameters
+    ----------
+    start : float
+        start value
+
+    stop: : float
+        stop value
+
+    step : float
+        default: 1
+
+    Returns
+    -------
+    Iterable
+
+    Note
+    ----
+    If numpy is installed, uses numpy.arange
+    """
+    if has_numpy():
+        return numpy.arange(start, stop, step)
+
+    result = []
+    value = start
+    while True:
+        if (step > 0 and value >= stop) or (step < 0 and value <= stop):
+            return result
+        result.append(value)
+        value += step
+
+
+def linspace(start, stop, num, endpoint=True):
+    """
+    like numpy.linspace, but returns a list
+
+    Parameters
+    ----------
+    start : float
+        start of the space
+
+    stop : float
+        stop of the space
+
+    num : int
+        number of points in the space
+
+    endpoint : bool
+        if True (default), stop is last point in the space |n|
+        if False, space ends before stop
+    """
+    if num == 0:
+        return []
+    if num == 1:
+        return [start]
+    if endpoint:
+        step = (stop - start) / (num - 1)
+    else:
+        step = (stop - start) / num
+
+    return [start + step * i for i in range(num)]
+
+
+def interp(x, xp, fp, left=None, right=None):
     """
     linear interpolatation
 
@@ -19190,45 +19574,45 @@ def interp(x, x_arr, y_arr):
     x : float
         target x-value
 
-    x_arr : list of float
+    xp : list of float, tuples or lists
         values on the x-axis
 
-    y_arr : list of float
+    fp : list of float, tuples of lists
         values on the y-axis |n|
-        should be same length as x_arr
+        should be same length as  p
 
     Returns
     -------
-    interpolated value : float
+    interpolated value : float, tuple or list
 
     Notes
     -----
-    If x < x_arr[0], y_arr[0] will be returned |n|
-    If x > x_arr[-1], y_arr[-1] will be returned |n|
+    If x < xp[0], fp[0] will be returned |n|
+    If x > xp[-1], fp[-1] will be returned |n|
 
-    This function is similar to the numpy interp function. In fact,
-    if numpy is installed this function will use numpy.interp.
+    This function is similar to the numpy interp function.
     """
-    if len(x_arr) != len(y_arr):
-        raise ValueError("lengths of x_arr and y_arr are not the same")
-    if len(x_arr) == 0:
-        raise ValueError("length of x_arr and y_arr must be >0")
+    if len(xp) != len(fp):
+        raise ValueError("xp and yp are not the same length")
+    if len(xp) == 0:
+        raise ValueError("list of sample points is empty")
 
-    if has_numpy:
-        return numpy.interp(x, x_arr, y_arr)
-    xiprev = None
-    for xi, yi in zip(x_arr, y_arr):
-        if xi >= x:
-            break
-        xiprev = xi
-        yiprev = yi
-    else:
-        return yi
+    if x < xp[0]:
+        return fp[0] if left is None else left
+    if x > xp[-1]:
+        return fp[-1] if right is None else right
+    if len(xp) == 1:
+        return fp[0]
 
-    if xiprev is None:
-        return yi
+    i = bisect.bisect_right(xp, x)
 
-    return yiprev + (yi - yiprev) * (x - xiprev) / (xi - xiprev)
+    if i >= len(xp):
+        return fp[-1]
+
+    if isinstance(fp[0], (tuple, list)):
+        return type(fp[0])(el_i_min_1 + (el_i - el_i_min_1) * (x - xp[i - 1]) / (xp[i] - xp[i - 1]) for el_i_min_1, el_i in zip(fp[i - 1], fp[i]))
+
+    return fp[i - 1] + (fp[i] - fp[i - 1]) * (x - xp[i - 1]) / (xp[i] - xp[i - 1])
 
 
 def _set_name(name, _nameserialize, object):
@@ -19403,15 +19787,16 @@ def _call(c, t, self):
     """
     special function to support scalars, methods (with one parameter) and function with zero, one or two parameters
     """
-    if inspect.isfunction(c):
-        nargs = c.__code__.co_argcount
-        if nargs == 0:
-            return c()
-        if nargs == 1:
+    if callable(c):
+        if inspect.isfunction(c):
+            nargs = c.__code__.co_argcount
+            if nargs == 0:
+                return c()
+            if nargs == 1:
+                return c(t)
+            return c(self, t)
+        if inspect.ismethod(c):
             return c(t)
-        return c(self, t)
-    if inspect.ismethod(c):
-        return c(t)
     return c
 
 
@@ -19509,6 +19894,10 @@ def resize_with_pad(im, target_width, target_height):
 
 
 class _AnimateIntro(Animate3dBase):
+    def __init__(self, env):
+        self.env = env
+        super().__init__()
+
     def setup(self):
         self.layer = -math.inf
         self.field_of_view_y = 45
@@ -19559,6 +19948,9 @@ class _AnimateIntro(Animate3dBase):
         if self.lights_pname(t) is None:
             self.lights_pname = gl.GL_POSITION  # in principal only at first call
 
+        background_color = list(self.env.colorspec_to_gl_color(self.env._background3d_color)) + [0.0]
+        gl.glClearColor(*background_color)
+
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
         gl.glMatrixMode(gl.GL_PROJECTION)
@@ -19578,13 +19970,17 @@ class _AnimateIntro(Animate3dBase):
 
 
 class _AnimateExtro(Animate3dBase):
+    def __init__(self, env):
+        self.env = env
+        super().__init__()
+
     def setup(self):
         self.layer = math.inf
 
     def draw(self, t):
         if self.env.an_objects_over3d:
-            for ao in self.env.an_objects_over3d:
-                ao.make_pil_image(t)
+            for ao in sorted(self.env.an_objects_over3d, key=lambda obj: (-obj.layer(t), obj.sequence)):
+                ao.make_pil_image(t - self.env._offset)
 
                 if ao._image_visible:
                     ao.x1 = ao._image_x
@@ -19593,17 +19989,19 @@ class _AnimateExtro(Animate3dBase):
                     ao.y2 = ao._image_y + ao._image.size[1]
 
             overlap = False
+            ao2_set = self.env.an_objects_over3d.copy()
             for ao1 in self.env.an_objects_over3d:
+                ao2_set.discard(ao1)
                 if ao1._image_visible:
-                    for ao2 in self.env.an_objects_over3d:
-                        if ao2._image_visible:
-                            x_match = (ao2.x2 > ao1.x1 and ao2.x2 < ao1.x2) or (ao2.x1 > ao1.x1 and ao2.x1 < ao1.x2)
-                            y_match = (ao2.y2 > ao1.y1 and ao2.y2 < ao1.y2) or (ao2.y1 > ao1.y1 and ao2.y1 < ao1.y2)
+                    for ao2 in ao2_set:
+                        if ao2._image_visible and ao1 != ao2:
+                            x_match = ao1.x1 <= ao2.x2 and ao2.x1 <= ao1.x2
+                            y_match = ao1.y1 <= ao2.y2 and ao2.y1 <= ao1.y2
                             if x_match and y_match:
                                 overlap = True
                                 break
-
-            #        print("overlap", overlap)
+                    if overlap:
+                        break
 
             gl.glEnable(gl.GL_TEXTURE_2D)
             gl.glEnable(gl.GL_BLEND)
@@ -19613,10 +20011,9 @@ class _AnimateExtro(Animate3dBase):
             gl.glLoadIdentity()
 
             gl.glOrtho(0, self.env._width3d, 0, self.env._height3d, -1, 1)
-            #            print(overlap)
             if overlap:
                 overlay_image = Image.new("RGBA", (self.env._width3d, self.env._height3d), (0, 0, 0, 0))
-                for ao in self.env.an_objects_over3d:
+                for ao in sorted(self.env.an_objects_over3d, key=lambda obj: (-obj.layer(t), obj.sequence)):
                     if ao._image_visible:
                         overlay_image.paste(ao._image, (int(ao._image_x), int(self.env._height3d - ao._image_y - ao._image.size[1])), ao._image)
                     imdata = overlay_image.tobytes("raw", "RGBA", 0, -1)
@@ -19628,7 +20025,7 @@ class _AnimateExtro(Animate3dBase):
                 gl.glDrawPixels(w, h, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, imdata)
 
             else:
-                for ao in self.env.an_objects_over3d:
+                for ao in sorted(self.env.an_objects_over3d, key=lambda obj: (-obj.layer(self.env._t), obj.sequence)):
                     if ao._image_visible:
                         imdata = ao._image.tobytes("raw", "RGBA", 0, -1)
                         w = ao._image.size[0]
@@ -21535,6 +21932,10 @@ def reset():
     except Exception:
         pass
 
+    try:
+        g.animation_env.root.destroy()
+    except Exception:
+        pass
     g.default_env = None
     g.animation_env = None
     g.animation_scene = None
@@ -21548,10 +21949,9 @@ reset()
 if __name__ == "__main__":
     try:
         import salabim_exp
-    except Exception:
+    except Exception as e:
         print("salabim_exp.py not found or ?")
-        raise
-        quit()
+        raise e
 
     try:
         salabim_exp.__dict__["exp"]
